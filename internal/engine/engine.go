@@ -91,6 +91,24 @@ func (e *DBEngine) SelectAll(tableName string) ([]string, []sql.Row, error) {
 	return cols, rows, nil
 }
 
+// ListTables returns the names of all tables in the storage engine.
+func (e *DBEngine) ListTables() ([]string, error) {
+	if !e.started {
+		return nil, fmt.Errorf("engine not started")
+	}
+
+	return e.store.ListTables()
+}
+
+// TableSchema returns the column definitions for a table.
+func (e *DBEngine) TableSchema(name string) ([]sql.Column, error) {
+	if !e.started {
+		return nil, fmt.Errorf("engine not started")
+	}
+
+	return e.store.TableSchema(name)
+}
+
 func (e *DBEngine) executeUpdate(stmt *sql.UpdateStmt) error {
 	if stmt.Where == nil {
 		return fmt.Errorf("UPDATE without WHERE is not supported yet")
@@ -141,7 +159,11 @@ func (e *DBEngine) executeDelete(stmt *sql.DeleteStmt) error {
 		return fmt.Errorf("scan: %w", err)
 	}
 
-	newRows, _ := applyDelete(cols, rows, stmt.Where)
+	newRows, _, err := applyDelete(cols, rows, stmt.Where)
+	if err != nil {
+		_ = e.store.Rollback(tx)
+		return err
+	}
 
 	if err := tx.ReplaceAll(stmt.TableName, newRows); err != nil {
 		_ = e.store.Rollback(tx)

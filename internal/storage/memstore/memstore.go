@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"goDB/internal/sql"
 	"goDB/internal/storage"
+	"sort"
 	"sync"
 )
 
@@ -23,6 +24,33 @@ func New() storage.Engine {
 	return &memEngine{
 		tables: make(map[string]*table),
 	}
+}
+
+func (e *memEngine) ListTables() ([]string, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	names := make([]string, 0, len(e.tables))
+	for name := range e.tables {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+	return names, nil
+}
+
+func (e *memEngine) TableSchema(name string) ([]sql.Column, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	t, ok := e.tables[name]
+	if !ok {
+		return nil, fmt.Errorf("table %s does not exist", name)
+	}
+
+	cols := make([]sql.Column, len(t.cols))
+	copy(cols, t.cols)
+	return cols, nil
 }
 
 // memTx represents a transaction on top of memEngine.
@@ -57,9 +85,13 @@ func (tx *memTx) ReplaceAll(tableName string, rows []sql.Row) error {
 		}
 	}
 
-	// store a copy to avoid external modification
+	// store a deep copy to avoid external modification
 	newRows := make([]sql.Row, len(rows))
-	copy(newRows, rows)
+	for i, r := range rows {
+		rowCopy := make(sql.Row, len(r))
+		copy(rowCopy, r)
+		newRows[i] = rowCopy
+	}
 
 	t.rows = newRows
 	return nil
@@ -80,9 +112,15 @@ func (tx *memTx) Scan(tableName string) (col []string, rows []sql.Row, err error
 		colNames[i] = c.Name
 	}
 
-	// We return the slice directly for now.
-	// Later we might want to return a copy to avoid external modification.
-	return colNames, t.rows, nil
+	// Return a deep copy to prevent callers from mutating stored data.
+	rowsCopy := make([]sql.Row, len(t.rows))
+	for i, r := range t.rows {
+		rowCopy := make(sql.Row, len(r))
+		copy(rowCopy, r)
+		rowsCopy[i] = rowCopy
+	}
+
+	return colNames, rowsCopy, nil
 }
 
 // Begin starts a new transaction.

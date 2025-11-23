@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 
 	"goDB/internal/engine"
 	"goDB/internal/sql"
@@ -32,46 +34,77 @@ func main() {
 	fmt.Println("  INSERT INTO users VALUES (1, 'Alice', true);")
 	fmt.Println("  SELECT * FROM users;")
 	fmt.Println("Meta commands:")
-	fmt.Println("  .exit   - quit")
-	fmt.Println("  .help   - show this help")
+	fmt.Println("  .tables        - list tables")
+	fmt.Println("  .schema <tbl>  - show column definitions")
+	fmt.Println("  .exit          - quit")
+	fmt.Println("  .help          - show this help")
 	fmt.Println()
 
 	runREPL(eng)
 }
 
 func runREPL(eng *engine.DBEngine) {
-	scanner := bufio.NewScanner(os.Stdin)
+	reader := bufio.NewReader(os.Stdin)
+	var buffer strings.Builder
 
 	for {
-		fmt.Print("godb> ")
+		prompt := "godb> "
+		if buffer.Len() > 0 {
+			prompt = "...> "
+		}
 
-		if !scanner.Scan() {
-			// EOF (Ctrl+D) or input error
-			fmt.Println("\nExiting.")
+		fmt.Print(prompt)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				fmt.Println("\nExiting.")
+				return
+			}
+
+			fmt.Println("Read error:", err)
 			return
 		}
 
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+		line = strings.TrimSpace(line)
+
+		if buffer.Len() == 0 && line == "" {
 			continue
 		}
 
-		// Meta commands start with a dot, like SQLite.
-		if strings.HasPrefix(line, ".") {
-			if handleMetaCommand(line) {
+		// Meta commands start with a dot, like SQLite. Only process them
+		// when no SQL is buffered to avoid mixing with multi-line input.
+		if buffer.Len() == 0 && strings.HasPrefix(line, ".") {
+			if handleMetaCommand(line, eng) {
 				return
 			}
 			continue
 		}
 
-		handleSQL(line, eng)
+		if line != "" {
+			if buffer.Len() > 0 {
+				buffer.WriteString(" ")
+			}
+			buffer.WriteString(line)
+		}
+
+		if strings.HasSuffix(line, ";") {
+			statement := buffer.String()
+			buffer.Reset()
+			handleSQL(statement, eng)
+		}
 	}
 }
 
 // handleMetaCommand processes commands like .exit, .help.
 // Returns true if the REPL should exit.
-func handleMetaCommand(line string) bool {
-	switch strings.ToLower(strings.TrimSpace(line)) {
+func handleMetaCommand(line string, eng *engine.DBEngine) bool {
+	trimmed := strings.TrimSpace(line)
+	parts := strings.Fields(trimmed)
+	if len(parts) == 0 {
+		return false
+	}
+
+	switch strings.ToLower(parts[0]) {
 	case ".exit", ".quit":
 		fmt.Println("Bye.")
 		return true
@@ -93,13 +126,50 @@ func handleMetaCommand(line string) bool {
 		fmt.Println("    - WHERE literals: INT, FLOAT, STRING ('text'), BOOL")
 		fmt.Println()
 		fmt.Println("Meta commands:")
-		fmt.Println("  .help   Show help")
-		fmt.Println("  .exit   Exit the REPL")
+		fmt.Println("  .tables        List available tables")
+		fmt.Println("  .schema <tbl>  Show column definitions")
+		fmt.Println("  .help          Show this help")
+		fmt.Println("  .exit          Exit the REPL")
 		fmt.Println()
+		return false
+	case ".tables":
+		names, err := eng.ListTables()
+		if err != nil {
+			fmt.Println("Error listing tables:", err)
+			return false
+		}
+
+		if len(names) == 0 {
+			fmt.Println("(no tables)")
+			return false
+		}
+
+		fmt.Println(strings.Join(names, "\n"))
+		return false
+	case ".schema":
+		if len(parts) < 2 {
+			fmt.Println("Usage: .schema <table>")
+			return false
+		}
+
+		cols, err := eng.TableSchema(parts[1])
+		if err != nil {
+			fmt.Println("Error loading schema:", err)
+			return false
+		}
+
+		if len(cols) == 0 {
+			fmt.Println("(no columns)")
+			return false
+		}
+
+		for _, col := range cols {
+			fmt.Printf("%s %s\n", col.Name, formatType(col.Type))
+		}
 		return false
 
 	default:
-		fmt.Printf("Unknown meta command: %s\n", line)
+		fmt.Printf("Unknown meta command: %s\n", trimmed)
 	}
 	return false
 }
@@ -158,5 +228,20 @@ func formatValue(v sql.Value) string {
 		return "false"
 	default:
 		return "NULL"
+	}
+}
+
+func formatType(t sql.DataType) string {
+	switch t {
+	case sql.TypeInt:
+		return "INT"
+	case sql.TypeFloat:
+		return "FLOAT"
+	case sql.TypeString:
+		return "STRING"
+	case sql.TypeBool:
+		return "BOOL"
+	default:
+		return "UNKNOWN"
 	}
 }
