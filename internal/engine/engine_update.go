@@ -6,7 +6,9 @@ import (
 )
 
 // applyUpdate returns a new rowset where all rows matching WHERE are updated
-// according to assignments. It returns the updated rows and the count of affected rows.
+// according to assignments. It returns the updated rows and the count of affected
+// rows. Column lookups are resolved once up front to avoid repeated map access
+// inside the loop.
 func applyUpdate(cols []string, rows []sql.Row, where *sql.WhereExpr, assigns []sql.Assignment) ([]sql.Row, int, error) {
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
