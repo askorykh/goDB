@@ -2,6 +2,7 @@ package sql
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -13,10 +14,17 @@ import (
 //	SELECT id, name FROM users;
 //	SELECT id, name FROM users WHERE active = true;
 func parseSelect(query string) (Statement, error) {
-	// query is trimmed and has no trailing semicolon here.
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil, fmt.Errorf("SELECT: empty query")
+	}
+	// strip trailing ';'
+	if strings.HasSuffix(q, ";") {
+		q = strings.TrimSpace(q[:len(q)-1])
+	}
 
-	upper := strings.ToUpper(query)
-	if !strings.HasPrefix(strings.TrimSpace(upper), "SELECT") {
+	upper := strings.ToUpper(q)
+	if !strings.HasPrefix(upper, "SELECT") {
 		return nil, fmt.Errorf("SELECT: expected SELECT")
 	}
 
@@ -26,113 +34,218 @@ func parseSelect(query string) (Statement, error) {
 		return nil, fmt.Errorf("SELECT: FROM not found")
 	}
 
-	// Part between SELECT and FROM: projection list (* or col list).
-	// Example: "SELECT *   " or "SELECT id, name  "
-	selectPart := strings.TrimSpace(query[len("SELECT"):idxFrom])
+	// Part between SELECT and FROM => projection list.
+	selectPart := strings.TrimSpace(q[len("SELECT"):idxFrom])
 	if selectPart == "" {
 		return nil, fmt.Errorf("SELECT: missing projection list")
 	}
 
 	var cols []string
 	if selectPart == "*" {
-		// nil or empty slice means "all columns"
-		cols = nil
+		cols = nil // SELECT * => nil/empty means "all columns"
 	} else {
-		// Split "id, name, active" -> ["id", "name", "active"]
 		colDefs := splitCommaSeparated(selectPart)
 		if len(colDefs) == 0 {
 			return nil, fmt.Errorf("SELECT: no valid column names")
 		}
-		cols = make([]string, 0, len(colDefs))
 		for _, c := range colDefs {
 			c = strings.TrimSpace(c)
-			if c == "" {
-				continue
+			if c != "" {
+				cols = append(cols, c)
 			}
-			cols = append(cols, c)
 		}
 		if len(cols) == 0 {
 			return nil, fmt.Errorf("SELECT: no valid column names")
 		}
 	}
 
-	// Everything after FROM: "users WHERE ..." or just "users"
-	afterFrom := strings.TrimSpace(query[idxFrom+len("FROM"):])
-	if afterFrom == "" {
+	// Everything after FROM: "table [WHERE ...] [ORDER BY ...] [LIMIT ...]"
+	rest := strings.TrimSpace(q[idxFrom+len("FROM"):])
+	if rest == "" {
 		return nil, fmt.Errorf("SELECT: missing table name")
 	}
 
-	upperAfter := strings.ToUpper(afterFrom)
-	idxWhere := strings.Index(upperAfter, "WHERE")
+	// Extract table name (first token).
+	tableFields := strings.Fields(rest)
+	if len(tableFields) == 0 {
+		return nil, fmt.Errorf("SELECT: missing table name")
+	}
+	tableName := tableFields[0]
 
-	var tableName string
-	var wherePart string
+	// Compute remaining tail after the table name.
+	idxTable := strings.Index(rest, tableName)
+	if idxTable == -1 {
+		return nil, fmt.Errorf("SELECT: internal error parsing table name")
+	}
+	tail := strings.TrimSpace(rest[idxTable+len(tableName):])
 
-	if idxWhere == -1 {
-		// No WHERE: entire rest is table name
-		tableNameStr := strings.TrimSpace(afterFrom)
-		toks := strings.Fields(tableNameStr)
-		if len(toks) == 0 {
-			return nil, fmt.Errorf("SELECT: missing table name")
-		}
-		tableName = toks[0]
-	} else {
-		// Split "table" and "where ..."
-		tableNameStr := strings.TrimSpace(afterFrom[:idxWhere])
-		toks := strings.Fields(tableNameStr)
-		if len(toks) == 0 {
-			return nil, fmt.Errorf("SELECT: missing table name before WHERE")
-		}
-		tableName = toks[0]
+	var whereExpr *WhereExpr
+	var orderBy *OrderByClause
+	var limitVal *int
 
-		wherePart = strings.TrimSpace(afterFrom[idxWhere+len("WHERE"):])
-		if wherePart == "" {
-			return nil, fmt.Errorf("SELECT: empty WHERE clause")
+	// 1) Optional WHERE ...
+	if tail != "" {
+		upperTail := strings.ToUpper(tail)
+		if strings.HasPrefix(upperTail, "WHERE ") {
+			wherePartAndRest := strings.TrimSpace(tail[len("WHERE "):])
+			upperWR := strings.ToUpper(wherePartAndRest)
+
+			// WHERE ... [ORDER BY ...] [LIMIT ...]
+			// split WHERE clause from possible ORDER BY / LIMIT
+			idxOrder := strings.Index(upperWR, " ORDER BY ")
+			idxLimit := strings.Index(upperWR, " LIMIT ")
+
+			endWhere := len(wherePartAndRest)
+			if idxOrder != -1 && idxOrder < endWhere {
+				endWhere = idxOrder
+			}
+			if idxLimit != -1 && idxLimit < endWhere {
+				endWhere = idxLimit
+			}
+
+			wherePart := strings.TrimSpace(wherePartAndRest[:endWhere])
+			if wherePart == "" {
+				return nil, fmt.Errorf("SELECT: empty WHERE clause")
+			}
+
+			w, err := parseWhereClause(wherePart)
+			if err != nil {
+				return nil, err
+			}
+			whereExpr = w
+
+			// tail becomes whatever comes after WHERE clause.
+			tail = strings.TrimSpace(wherePartAndRest[endWhere:])
 		}
 	}
 
-	var where *WhereExpr
-	if wherePart != "" {
-		w, err := parseWhereClause(wherePart)
-		if err != nil {
-			return nil, err
+	// 2) Optional ORDER BY ...
+	if tail != "" {
+		upperTail := strings.ToUpper(tail)
+		if strings.HasPrefix(upperTail, "ORDER BY ") {
+			orderPartAndRest := strings.TrimSpace(tail[len("ORDER BY "):])
+			upperOR := strings.ToUpper(orderPartAndRest)
+
+			// ORDER BY ... [LIMIT ...]
+			idxLimit := strings.Index(upperOR, " LIMIT ")
+
+			endOrder := len(orderPartAndRest)
+			if idxLimit != -1 && idxLimit < endOrder {
+				endOrder = idxLimit
+			}
+
+			orderPart := strings.TrimSpace(orderPartAndRest[:endOrder])
+			if orderPart == "" {
+				return nil, fmt.Errorf("SELECT: empty ORDER BY clause")
+			}
+
+			parts := strings.Fields(orderPart)
+			if len(parts) == 0 {
+				return nil, fmt.Errorf("SELECT: invalid ORDER BY clause")
+			}
+			orderCol := parts[0]
+			desc := false
+			if len(parts) >= 2 {
+				dir := strings.ToUpper(parts[1])
+				if dir == "DESC" {
+					desc = true
+				} else if dir != "ASC" {
+					return nil, fmt.Errorf("SELECT: ORDER BY direction must be ASC or DESC, got %q", parts[1])
+				}
+			}
+
+			orderBy = &OrderByClause{
+				Column: orderCol,
+				Desc:   desc,
+			}
+
+			tail = strings.TrimSpace(orderPartAndRest[endOrder:])
 		}
-		where = w
+	}
+
+	// 3) Optional LIMIT ...
+	if tail != "" {
+		upperTail := strings.ToUpper(tail)
+		if strings.HasPrefix(upperTail, "LIMIT ") {
+			limitPart := strings.TrimSpace(tail[len("LIMIT "):])
+			if limitPart == "" {
+				return nil, fmt.Errorf("SELECT: empty LIMIT value")
+			}
+			n, err := strconv.Atoi(limitPart)
+			if err != nil || n < 0 {
+				return nil, fmt.Errorf("SELECT: invalid LIMIT value %q", limitPart)
+			}
+			limitVal = &n
+			tail = ""
+		}
+	}
+
+	// Any leftover tokens we didn't understand?
+	if strings.TrimSpace(tail) != "" {
+		return nil, fmt.Errorf("SELECT: unexpected trailing input %q", tail)
 	}
 
 	return &SelectStmt{
 		TableName: tableName,
-		Columns:   cols, // nil/empty => SELECT *
-		Where:     where,
+		Columns:   cols,
+		Where:     whereExpr,
+		OrderBy:   orderBy,
+		Limit:     limitVal,
 	}, nil
 }
 
-// parseWhereClause parses a simple "column = literal" expression.
-func parseWhereClause(wherePart string) (*WhereExpr, error) {
-	// Expect: column [spaces] = [spaces] literal
-	idxEq := strings.Index(wherePart, "=")
-	if idxEq == -1 {
-		return nil, fmt.Errorf("WHERE: only '=' operator is supported for now")
+// parseWhereClause parses a simple binary comparison:
+//
+//	column = literal
+//	column != literal
+//	column < literal
+//	column <= literal
+//	column > literal
+//	column >= literal
+//
+// We keep it deliberately simple and do not support AND/OR yet.
+func parseWhereClause(s string) (*WhereExpr, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("WHERE: empty clause")
 	}
 
-	colPart := strings.TrimSpace(wherePart[:idxEq])
-	valPart := strings.TrimSpace(wherePart[idxEq+1:])
+	upper := strings.ToUpper(s)
 
-	if colPart == "" {
-		return nil, fmt.Errorf("WHERE: missing column name")
-	}
-	if valPart == "" {
-		return nil, fmt.Errorf("WHERE: missing value after '='")
+	// Order is important: multi-char operators first.
+	ops := []string{">=", "<=", "!=", "=", ">", "<"}
+
+	var op string
+	var idx int = -1
+
+	for _, candidate := range ops {
+		i := strings.Index(upper, candidate)
+		if i != -1 {
+			op = candidate
+			idx = i
+			break
+		}
 	}
 
-	val, err := parseLiteral(valPart)
+	if idx == -1 {
+		return nil, fmt.Errorf("WHERE: could not find comparison operator in %q", s)
+	}
+
+	left := strings.TrimSpace(s[:idx])
+	right := strings.TrimSpace(s[idx+len(op):])
+
+	if left == "" || right == "" {
+		return nil, fmt.Errorf("WHERE: invalid expression %q", s)
+	}
+
+	val, err := parseLiteral(right)
 	if err != nil {
-		return nil, fmt.Errorf("WHERE: invalid literal %q: %w", valPart, err)
+		return nil, fmt.Errorf("WHERE: invalid literal %q: %w", right, err)
 	}
 
 	return &WhereExpr{
-		Column: colPart,
-		Op:     "=",
+		Column: left,
+		Op:     op,
 		Value:  val,
 	}, nil
 }

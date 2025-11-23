@@ -917,3 +917,57 @@ func TestEngine_SQLTransactions_CommitAndRollback(t *testing.T) {
 		t.Fatalf("expected 1 row after commit, got %d", len(rows))
 	}
 }
+func TestEngine_Select_OrderByLimitAndWhere(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// CREATE
+	createSQL := "CREATE TABLE users (id INT, name STRING, age INT);"
+	stmt, _ := sql.Parse(createSQL)
+	if _, _, err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	// INSERT some users
+	queries := []string{
+		"INSERT INTO users VALUES (1, 'Charlie', 30);",
+		"INSERT INTO users VALUES (2, 'Alice', 25);",
+		"INSERT INTO users VALUES (3, 'Bob', 20);",
+	}
+	for _, q := range queries {
+		s, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse INSERT failed: %v", err)
+		}
+		if _, _, err := eng.Execute(s); err != nil {
+			t.Fatalf("Execute INSERT failed: %v", err)
+		}
+	}
+
+	// SELECT names of users age >= 21, order by name asc, limit 2
+	selectSQL := "SELECT name FROM users WHERE age >= 21 ORDER BY name ASC LIMIT 2;"
+	selStmt, err := sql.Parse(selectSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+	cols, rows, err := eng.Execute(selStmt)
+	if err != nil {
+		t.Fatalf("Execute SELECT failed: %v", err)
+	}
+
+	if len(cols) != 1 || cols[0] != "name" {
+		t.Fatalf("unexpected cols: %#v", cols)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	got := []string{rows[0][0].S, rows[1][0].S}
+	want := []string{"Alice", "Charlie"}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected ordering: got %v, want %v", got, want)
+	}
+}

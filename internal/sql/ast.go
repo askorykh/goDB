@@ -37,6 +37,8 @@ type SelectStmt struct {
 	TableName string
 	Columns   []string   // nil or empty => SELECT *
 	Where     *WhereExpr // nil if no WHERE clause
+	OrderBy   *OrderByClause
+	Limit     *int // nil if no LIMIT
 }
 
 func (*SelectStmt) stmtNode() {}
@@ -75,17 +77,23 @@ type DeleteStmt struct {
 
 func (*DeleteStmt) stmtNode() {}
 
-// BEGIN [TRANSACTION]
+// BeginTxStmt BEGIN [TRANSACTION]
 type BeginTxStmt struct{}
 
 func (*BeginTxStmt) stmtNode() {}
 
-// COMMIT [TRANSACTION]
+// CommitTxStmt COMMIT [TRANSACTION]
 type CommitTxStmt struct{}
 
 func (*CommitTxStmt) stmtNode() {}
 
-// ROLLBACK [TRANSACTION]
+// RollbackTxStmt ROLLBACK [TRANSACTION]
 type RollbackTxStmt struct{}
 
 func (*RollbackTxStmt) stmtNode() {}
+
+// OrderByClause represents "ORDER BY column [ASC|DESC]".
+type OrderByClause struct {
+	Column string
+	Desc   bool // false = ASC (default), true = DESC
+}

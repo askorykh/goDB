@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"goDB/internal/sql"
+	"sort"
 )
 
 // Execute takes a parsed SQL Statement and executes it using the engine.
@@ -21,7 +22,6 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 		return nil, nil, e.executeInsert(s)
 
 	case *sql.SelectStmt:
-		// Get full rowset from storage.
 		var fullCols []string
 		var fullRows []sql.Row
 		var err error
@@ -29,25 +29,37 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 		if e.inTx {
 			fullCols, fullRows, err = e.executeSelectInTx(e.currTx, s.TableName)
 		} else {
-			fullCols, fullRows, err = e.executeSelect(s.TableName) // existing auto-commit helper
+			fullCols, fullRows, err = e.executeSelect(s.TableName)
 		}
 		if err != nil {
 			return nil, nil, err
 		}
 
-		// Apply WHERE filter first (uses full column set).
+		// WHERE
 		if s.Where != nil {
 			fullRows = filterRowsWhere(fullCols, fullRows, s.Where)
 		}
 
-		// If no column list -> return all columns.
+		// ORDER BY
+		if s.OrderBy != nil {
+			sortRows(fullCols, fullRows, s.OrderBy)
+		}
+
+		// LIMIT
+		if s.Limit != nil {
+			n := *s.Limit
+			if n < len(fullRows) {
+				fullRows = fullRows[:n]
+			}
+		}
+
+		// Projection
 		if len(s.Columns) == 0 {
 			return fullCols, fullRows, nil
 		}
-
-		// Otherwise project only requested columns.
 		projCols, projRows, err := projectColumns(fullCols, fullRows, s.Columns)
 		return projCols, projRows, err
+
 	case *sql.UpdateStmt:
 		return nil, nil, e.executeUpdate(s)
 
@@ -69,4 +81,29 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 	default:
 		return nil, nil, fmt.Errorf("unsupported statement type %T", stmt)
 	}
+}
+
+func sortRows(cols []string, rows []sql.Row, ob *sql.OrderByClause) {
+	colIndex := make(map[string]int, len(cols))
+	for i, name := range cols {
+		colIndex[name] = i
+	}
+	idx, ok := colIndex[ob.Column]
+	if !ok {
+		// Unknown ORDER BY column: do nothing (or log)
+		return
+	}
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		a := rows[i][idx]
+		b := rows[j][idx]
+		cmp, err := compareValues(a, b)
+		if err != nil {
+			return false
+		}
+		if ob.Desc {
+			return cmp > 0
+		}
+		return cmp < 0
+	})
 }

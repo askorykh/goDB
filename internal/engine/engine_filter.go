@@ -3,11 +3,11 @@ package engine
 import (
 	"fmt"
 	"goDB/internal/sql"
+	"strings"
 )
 
 // filterRowsWhere filters rows according to a simple WHERE expression (column = literal).
 func filterRowsWhere(cols []string, rows []sql.Row, where *sql.WhereExpr) []sql.Row {
-	// Map column name -> index
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
 		colIndex[name] = i
@@ -15,21 +15,19 @@ func filterRowsWhere(cols []string, rows []sql.Row, where *sql.WhereExpr) []sql.
 
 	idx, ok := colIndex[where.Column]
 	if !ok {
-		// Column not found: no rows match.
+		// Unknown column -> no matches
 		return nil
 	}
 
-	var out []sql.Row
-	for _, row := range rows {
-		if idx < 0 || idx >= len(row) {
+	out := make([]sql.Row, 0, len(rows))
+	for _, r := range rows {
+		if idx < 0 || idx >= len(r) {
 			continue
 		}
-		v := row[idx]
-		if valuesEqual(v, where.Value) {
-			out = append(out, row)
+		if conditionMatches(r[idx], where.Op, where.Value) {
+			out = append(out, r)
 		}
 	}
-
 	return out
 }
 
@@ -92,4 +90,78 @@ func projectColumns(allCols []string, rows []sql.Row, requestedCols []string) ([
 	}
 
 	return outCols, outRows, nil
+}
+
+// compareValues compares two non-NULL values of the same type.
+// Returns -1 if a < b, 0 if a == b, 1 if a > b.
+// If types differ or comparison is not meaningful, returns an error.
+func compareValues(a, b sql.Value) (int, error) {
+	if a.Type == sql.TypeNull || b.Type == sql.TypeNull {
+		return 0, fmt.Errorf("cannot compare NULL values")
+	}
+	if a.Type != b.Type {
+		return 0, fmt.Errorf("cannot compare values of different types")
+	}
+
+	switch a.Type {
+	case sql.TypeInt:
+		if a.I64 < b.I64 {
+			return -1, nil
+		} else if a.I64 > b.I64 {
+			return 1, nil
+		}
+		return 0, nil
+	case sql.TypeFloat:
+		if a.F64 < b.F64 {
+			return -1, nil
+		} else if a.F64 > b.F64 {
+			return 1, nil
+		}
+		return 0, nil
+	case sql.TypeString:
+		return strings.Compare(a.S, b.S), nil
+	case sql.TypeBool:
+		ai := 0
+		if a.B {
+			ai = 1
+		}
+		bi := 0
+		if b.B {
+			bi = 1
+		}
+		if ai < bi {
+			return -1, nil
+		} else if ai > bi {
+			return 1, nil
+		}
+		return 0, nil
+	default:
+		return 0, fmt.Errorf("unsupported type in compareValues: %v", a.Type)
+	}
+}
+
+// conditionMatches checks rowValue <op> whereValue.
+func conditionMatches(rowVal sql.Value, op string, whereVal sql.Value) bool {
+	switch op {
+	case "=":
+		return valuesEqual(rowVal, whereVal)
+	case "!=":
+		return !valuesEqual(rowVal, whereVal)
+	case "<", "<=", ">", ">=":
+		cmp, err := compareValues(rowVal, whereVal)
+		if err != nil {
+			return false
+		}
+		switch op {
+		case "<":
+			return cmp < 0
+		case "<=":
+			return cmp <= 0
+		case ">":
+			return cmp > 0
+		case ">=":
+			return cmp >= 0
+		}
+	}
+	return false
 }

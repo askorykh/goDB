@@ -420,3 +420,29 @@ func TestParseInsert_WithColumnList(t *testing.T) {
 		t.Fatalf("expected 2 values, got %d", len(ins.Values))
 	}
 }
+func TestParseSelect_OrderByLimit(t *testing.T) {
+	query := "SELECT id, name FROM users WHERE age >= 18 ORDER BY name DESC LIMIT 10;"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	sel, ok := stmt.(*SelectStmt)
+	if !ok {
+		t.Fatalf("expected *SelectStmt, got %T", stmt)
+	}
+
+	if sel.TableName != "users" {
+		t.Fatalf("expected table users, got %q", sel.TableName)
+	}
+	if sel.Where == nil || sel.Where.Op != ">=" || sel.Where.Column != "age" {
+		t.Fatalf("unexpected WHERE: %+v", sel.Where)
+	}
+	if sel.OrderBy == nil || sel.OrderBy.Column != "name" || !sel.OrderBy.Desc {
+		t.Fatalf("unexpected ORDER BY: %+v", sel.OrderBy)
+	}
+	if sel.Limit == nil || *sel.Limit != 10 {
+		t.Fatalf("unexpected LIMIT: %+v", sel.Limit)
+	}
+}

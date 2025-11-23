@@ -18,7 +18,6 @@ func applyUpdate(cols []string, rows []sql.Row, where *sql.WhereExpr, assigns []
 		return nil, 0, fmt.Errorf("UPDATE: unknown column %q in WHERE", where.Column)
 	}
 
-	// Precompute assignment indexes
 	assignIdx := make([]int, len(assigns))
 	for i, a := range assigns {
 		idx, ok := colIndex[a.Column]
@@ -28,21 +27,16 @@ func applyUpdate(cols []string, rows []sql.Row, where *sql.WhereExpr, assigns []
 		assignIdx[i] = idx
 	}
 
-	// Copy rows so we don't mutate the original slice
 	newRows := make([]sql.Row, len(rows))
 	affected := 0
 
 	for i, r := range rows {
-		// copy row
 		newRow := make(sql.Row, len(r))
 		copy(newRow, r)
 
-		// WHERE check
-		if valuesEqual(newRow[whereIdx], where.Value) {
-			// apply assignments
+		if conditionMatches(newRow[whereIdx], where.Op, where.Value) {
 			for j, a := range assigns {
 				idx := assignIdx[j]
-				// Optionally: type check is already done by storage.ReplaceAll, but we can be explicit here too.
 				newRow[idx] = a.Value
 			}
 			affected++
@@ -67,16 +61,15 @@ func applyDelete(cols []string, rows []sql.Row, where *sql.WhereExpr) ([]sql.Row
 		return nil, 0, fmt.Errorf("DELETE: unknown column %q in WHERE", where.Column)
 	}
 
-	var out []sql.Row
+	out := make([]sql.Row, 0, len(rows))
 	deleted := 0
 
 	for _, r := range rows {
 		if whereIdx < 0 || whereIdx >= len(r) {
-			// skip weird rows
 			out = append(out, r)
 			continue
 		}
-		if valuesEqual(r[whereIdx], where.Value) {
+		if conditionMatches(r[whereIdx], where.Op, where.Value) {
 			deleted++
 			continue
 		}
