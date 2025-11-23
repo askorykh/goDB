@@ -101,7 +101,8 @@ func (e *DBEngine) Execute(stmt sql.Statement) error {
 	switch s := stmt.(type) {
 	case *sql.CreateTableStmt:
 		return e.CreateTable(s.TableName, s.Columns)
-
+	case *sql.InsertStmt:
+		return e.InsertRow(s.TableName, s.Values)
 	default:
 		return fmt.Errorf("unsupported statement type %T", stmt)
 	}

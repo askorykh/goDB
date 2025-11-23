@@ -73,3 +73,70 @@ func TestParseCreateTable_Unsupported(t *testing.T) {
 		t.Fatalf("expected error for unsupported statement, got nil")
 	}
 }
+
+func TestParseInsert_Basic(t *testing.T) {
+	query := "INSERT INTO users VALUES (1, 'Alice', true);"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	ins, ok := stmt.(*InsertStmt)
+	if !ok {
+		t.Fatalf("expected *InsertStmt, got %T", stmt)
+	}
+
+	if ins.TableName != "users" {
+		t.Fatalf("expected table name %q, got %q", "users", ins.TableName)
+	}
+
+	if len(ins.Values) != 3 {
+		t.Fatalf("expected 3 values, got %d", len(ins.Values))
+	}
+
+	// id
+	if ins.Values[0].Type != TypeInt || ins.Values[0].I64 != 1 {
+		t.Fatalf("unexpected first value: %+v", ins.Values[0])
+	}
+	// name
+	if ins.Values[1].Type != TypeString || ins.Values[1].S != "Alice" {
+		t.Fatalf("unexpected second value: %+v", ins.Values[1])
+	}
+	// active
+	if ins.Values[2].Type != TypeBool || ins.Values[2].B != true {
+		t.Fatalf("unexpected third value: %+v", ins.Values[2])
+	}
+}
+
+func TestParseInsert_CaseAndSpaces(t *testing.T) {
+	query := "  insert  into   Accounts   values  (  100.5 ,  'John Doe' , FALSE ); "
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	ins, ok := stmt.(*InsertStmt)
+	if !ok {
+		t.Fatalf("expected *InsertStmt, got %T", stmt)
+	}
+
+	if ins.TableName != "Accounts" {
+		t.Fatalf("expected table name %q, got %q", "Accounts", ins.TableName)
+	}
+
+	if len(ins.Values) != 3 {
+		t.Fatalf("expected 3 values, got %d", len(ins.Values))
+	}
+
+	if ins.Values[0].Type != TypeFloat {
+		t.Fatalf("expected first value to be FLOAT, got %v", ins.Values[0].Type)
+	}
+	if ins.Values[1].Type != TypeString || ins.Values[1].S != "John Doe" {
+		t.Fatalf("unexpected second value: %+v", ins.Values[1])
+	}
+	if ins.Values[2].Type != TypeBool || ins.Values[2].B != false {
+		t.Fatalf("unexpected third value: %+v", ins.Values[2])
+	}
+}

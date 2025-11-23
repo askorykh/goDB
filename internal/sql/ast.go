@@ -12,3 +12,11 @@ type CreateTableStmt struct {
 }
 
 func (*CreateTableStmt) stmtNode() {}
+
+// InsertStmt represents a parsed INSERT INTO ... VALUES (...) statement.
+type InsertStmt struct {
+	TableName string
+	Values    Row // one row of literal values
+}
+
+func (*InsertStmt) stmtNode() {}

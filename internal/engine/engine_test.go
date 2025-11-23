@@ -150,3 +150,55 @@ func TestEngineExecute_CreateTableAndUseIt(t *testing.T) {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
 }
+func TestEngineExecute_InsertViaSQL(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// 1. CREATE TABLE via SQL
+	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
+	createStmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if err := eng.Execute(createStmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	// 2. INSERT rows via SQL
+	insert1 := "INSERT INTO users VALUES (1, 'Alice', true);"
+	insert2 := "INSERT INTO users VALUES (2, 'Bob', false);"
+
+	for _, q := range []string{insert1, insert2} {
+		stmt, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse INSERT failed for %q: %v", q, err)
+		}
+		if err := eng.Execute(stmt); err != nil {
+			t.Fatalf("Execute INSERT failed for %q: %v", q, err)
+		}
+	}
+
+	// 3. SELECT via engine API
+	cols, rows, err := eng.SelectAll("users")
+	if err != nil {
+		t.Fatalf("SelectAll failed: %v", err)
+	}
+
+	expectedCols := []string{"id", "name", "active"}
+	if len(cols) != len(expectedCols) {
+		t.Fatalf("expected %d columns, got %d", len(expectedCols), len(cols))
+	}
+	for i, want := range expectedCols {
+		if cols[i] != want {
+			t.Fatalf("column %d: expected %q, got %q", i, want, cols[i])
+		}
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+}
