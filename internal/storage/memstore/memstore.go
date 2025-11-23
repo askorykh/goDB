@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"goDB/internal/sql"
 	"goDB/internal/storage"
+	"sort"
 	"sync"
 )
 
@@ -23,6 +24,33 @@ func New() storage.Engine {
 	return &memEngine{
 		tables: make(map[string]*table),
 	}
+}
+
+func (e *memEngine) ListTables() ([]string, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	names := make([]string, 0, len(e.tables))
+	for name := range e.tables {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+	return names, nil
+}
+
+func (e *memEngine) TableSchema(name string) ([]sql.Column, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	t, ok := e.tables[name]
+	if !ok {
+		return nil, fmt.Errorf("table %s does not exist", name)
+	}
+
+	cols := make([]sql.Column, len(t.cols))
+	copy(cols, t.cols)
+	return cols, nil
 }
 
 // memTx represents a transaction on top of memEngine.

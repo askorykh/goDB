@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"reflect"
+	"testing"
+
 	"goDB/internal/sql"
 	"goDB/internal/storage/memstore"
-	"testing"
 )
 
 // TestEngineCreateInsertSelectAll checks the engine API end-to-end
@@ -738,5 +740,46 @@ func TestExecuteDeleteUnknownWhereColumn(t *testing.T) {
 
 	if _, _, err := eng.Execute(delStmt); err == nil {
 		t.Fatalf("expected error for unknown WHERE column, got nil")
+	}
+}
+
+func TestEngine_ListTablesAndSchema(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	tables, err := eng.ListTables()
+	if err != nil {
+		t.Fatalf("ListTables failed: %v", err)
+	}
+	if len(tables) != 0 {
+		t.Fatalf("expected no tables, got %v", tables)
+	}
+
+	cols := []sql.Column{{Name: "id", Type: sql.TypeInt}, {Name: "name", Type: sql.TypeString}}
+	if err := eng.CreateTable("users", cols); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	tables, err = eng.ListTables()
+	if err != nil {
+		t.Fatalf("ListTables after create failed: %v", err)
+	}
+	if len(tables) != 1 || tables[0] != "users" {
+		t.Fatalf("expected [users], got %v", tables)
+	}
+
+	schema, err := eng.TableSchema("users")
+	if err != nil {
+		t.Fatalf("TableSchema failed: %v", err)
+	}
+	if !reflect.DeepEqual(cols, schema) {
+		t.Fatalf("schema mismatch: expected %+v, got %+v", cols, schema)
+	}
+
+	if _, err = eng.TableSchema("missing"); err == nil {
+		t.Fatalf("expected error for missing table schema")
 	}
 }

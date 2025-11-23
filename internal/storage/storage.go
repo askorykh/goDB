@@ -36,4 +36,10 @@ type Engine interface {
 	// CreateTable creates a new empty table with the given column names.
 	// For now, we only support simple "name + list of columns".
 	CreateTable(name string, cols []sql.Column) error
+
+	// ListTables returns the names of all tables in the engine.
+	ListTables() ([]string, error)
+
+	// TableSchema returns the column definitions for a table.
+	TableSchema(name string) ([]sql.Column, error)
 }
