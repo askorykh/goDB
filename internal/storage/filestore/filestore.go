@@ -45,6 +45,7 @@ const (
 //	      NULL:   no payload
 type FileEngine struct {
 	dir string
+	wal *walLogger
 }
 
 // ListTables returns all *.godb files in the storage directory.
@@ -89,7 +90,16 @@ func New(dir string) (*FileEngine, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("filestore: create dir: %w", err)
 	}
-	return &FileEngine{dir: dir}, nil
+
+	w, err := newWAL(dir)
+	if err != nil {
+		return nil, fmt.Errorf("filestore: init WAL: %w", err)
+	}
+
+	return &FileEngine{
+		dir: dir,
+		wal: w,
+	}, nil
 }
 
 func (e *FileEngine) tablePath(name string) string {
@@ -135,6 +145,13 @@ func (e *FileEngine) Begin(readOnly bool) (storage.Tx, error) {
 }
 
 func (e *FileEngine) Commit(tx storage.Tx) error {
+	// flush WAL to disk before we consider commit successful
+	if e.wal != nil {
+		if err := e.wal.Sync(); err != nil {
+			return fmt.Errorf("filestore: WAL sync on commit: %w", err)
+		}
+	}
+
 	ft, ok := tx.(*fileTx)
 	if !ok {
 		return fmt.Errorf("filestore: commit: unexpected transaction type %T", tx)
@@ -179,6 +196,12 @@ func (tx *fileTx) Insert(tableName string, row sql.Row) error {
 		return fmt.Errorf("filestore: cannot insert in read-only transaction")
 	}
 
+	// 1) WAL: log the insert first
+	if err := tx.eng.wal.appendInsert(tableName, row); err != nil {
+		return fmt.Errorf("filestore: WAL appendInsert: %w", err)
+	}
+
+	// 2) Then write to table file
 	path := tx.eng.tablePath(tableName)
 	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
@@ -252,6 +275,11 @@ func (tx *fileTx) ReplaceAll(tableName string, rows []sql.Row) error {
 	}
 	if tx.readOnly {
 		return fmt.Errorf("filestore: cannot replace in read-only transaction")
+	}
+
+	//  WAL: log replaceAll
+	if err := tx.eng.wal.appendReplaceAll(tableName, rows); err != nil {
+		return fmt.Errorf("filestore: WAL appendReplaceAll: %w", err)
 	}
 
 	path := tx.eng.tablePath(tableName)
