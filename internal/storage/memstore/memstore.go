@@ -57,6 +57,25 @@ func (e *memEngine) TableSchema(name string) ([]sql.Column, error) {
 type memTx struct {
 	eng      *memEngine
 	readOnly bool
+	tables   map[string]*table
+}
+
+func cloneTable(t *table) *table {
+	colsCopy := make([]sql.Column, len(t.cols))
+	copy(colsCopy, t.cols)
+
+	rowsCopy := make([]sql.Row, len(t.rows))
+	for i, r := range t.rows {
+		rowCopy := make(sql.Row, len(r))
+		copy(rowCopy, r)
+		rowsCopy[i] = rowCopy
+	}
+
+	return &table{
+		name: t.name,
+		cols: colsCopy,
+		rows: rowsCopy,
+	}
 }
 
 func (tx *memTx) ReplaceAll(tableName string, rows []sql.Row) error {
@@ -64,10 +83,7 @@ func (tx *memTx) ReplaceAll(tableName string, rows []sql.Row) error {
 		return fmt.Errorf("cannot replace in a read-only transaction")
 	}
 
-	tx.eng.mu.Lock()
-	defer tx.eng.mu.Unlock()
-
-	t, ok := tx.eng.tables[tableName]
+	t, ok := tx.tables[tableName]
 	if !ok {
 		return fmt.Errorf("table %s does not exist", tableName)
 	}
@@ -98,10 +114,7 @@ func (tx *memTx) ReplaceAll(tableName string, rows []sql.Row) error {
 }
 
 func (tx *memTx) Scan(tableName string) (col []string, rows []sql.Row, err error) {
-	tx.eng.mu.RLock()
-	defer tx.eng.mu.RUnlock()
-
-	t, ok := tx.eng.tables[tableName]
+	t, ok := tx.tables[tableName]
 	if !ok {
 		return nil, nil, fmt.Errorf("table %s does not exist", tableName)
 	}
@@ -125,15 +138,35 @@ func (tx *memTx) Scan(tableName string) (col []string, rows []sql.Row, err error
 
 // Begin starts a new transaction.
 func (e *memEngine) Begin(readOnly bool) (storage.Tx, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	tablesCopy := make(map[string]*table, len(e.tables))
+	for name, t := range e.tables {
+		tablesCopy[name] = cloneTable(t)
+	}
+
 	return &memTx{
 		eng:      e,
 		readOnly: readOnly,
+		tables:   tablesCopy,
 	}, nil
 }
 
 // Commit finishes a transaction.
-// For this simple in-memory implementation, it's a no-op.
 func (e *memEngine) Commit(tx storage.Tx) error {
+	m, ok := tx.(*memTx)
+	if !ok {
+		return fmt.Errorf("invalid transaction type")
+	}
+	if m.readOnly {
+		return nil
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.tables = m.tables
 	return nil
 }
 
@@ -149,10 +182,7 @@ func (tx *memTx) Insert(tableName string, row sql.Row) error {
 		return fmt.Errorf("cannot insert in a read-only transaction")
 	}
 
-	tx.eng.mu.Lock()
-	defer tx.eng.mu.Unlock()
-
-	t, ok := tx.eng.tables[tableName]
+	t, ok := tx.tables[tableName]
 	if !ok {
 		return fmt.Errorf("table %s does not exist", tableName)
 	}
