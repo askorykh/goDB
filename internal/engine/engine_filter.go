@@ -89,3 +89,11 @@ func projectColumns(allCols []string, rows []sql.Row, requestedCols []string) ([
 
 	return outCols, outRows, nil
 }
+func indexOf(cols []string, target string) int {
+	for i, c := range cols {
+		if c == target {
+			return i
+		}
+	}
+	return -1
+}

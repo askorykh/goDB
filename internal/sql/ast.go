@@ -16,7 +16,8 @@ func (*CreateTableStmt) stmtNode() {}
 // InsertStmt represents a parsed INSERT INTO ... VALUES (...) statement.
 type InsertStmt struct {
 	TableName string
-	Values    Row // one row of literal values
+	Columns   []string // optional, can be empty → means full schema order
+	Values    []Value
 }
 
 func (*InsertStmt) stmtNode() {}

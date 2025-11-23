@@ -18,8 +18,7 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 		return nil, nil, err
 
 	case *sql.InsertStmt:
-		err := e.InsertRow(s.TableName, s.Values)
-		return nil, nil, err
+		return nil, nil, e.executeInsert(s)
 
 	case *sql.SelectStmt:
 		// Get full rowset from storage.

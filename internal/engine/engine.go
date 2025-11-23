@@ -154,3 +154,76 @@ func (e *DBEngine) executeDelete(stmt *sql.DeleteStmt) error {
 
 	return nil
 }
+
+func (e *DBEngine) executeInsert(stmt *sql.InsertStmt) error {
+	tx, err := e.store.Begin(false)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	// We only need column names here; types will be validated by the storage Insert.
+	fullCols, _, err := tx.Scan(stmt.TableName)
+	if err != nil {
+		_ = e.store.Rollback(tx)
+		return fmt.Errorf("scan: %w", err)
+	}
+
+	// Case 1: no column list -> VALUES must match full schema order and count
+	if len(stmt.Columns) == 0 {
+		if len(stmt.Values) != len(fullCols) {
+			_ = e.store.Rollback(tx)
+			return fmt.Errorf("INSERT: value count %d does not match table columns %d",
+				len(stmt.Values), len(fullCols))
+		}
+
+		if err := tx.Insert(stmt.TableName, stmt.Values); err != nil {
+			_ = e.store.Rollback(tx)
+			return fmt.Errorf("insert: %w", err)
+		}
+		return e.store.Commit(tx)
+	}
+
+	// Case 2: column list present -> map values to schema positions
+	colIndex := make(map[string]int, len(fullCols))
+	for i, name := range fullCols {
+		colIndex[name] = i
+	}
+
+	if len(stmt.Columns) != len(stmt.Values) {
+		_ = e.store.Rollback(tx)
+		return fmt.Errorf("INSERT: number of columns (%d) doesn't match values count (%d)",
+			len(stmt.Columns), len(stmt.Values))
+	}
+
+	out := make([]sql.Value, len(fullCols))
+	set := make([]bool, len(fullCols)) // track which columns were assigned
+
+	for i, colName := range stmt.Columns {
+		pos, ok := colIndex[colName]
+		if !ok {
+			_ = e.store.Rollback(tx)
+			return fmt.Errorf("INSERT: unknown column %q", colName)
+		}
+		out[pos] = stmt.Values[i]
+		set[pos] = true
+	}
+
+	// For now we require all columns to be provided (no defaults/NULL yet).
+	for i, assigned := range set {
+		if !assigned {
+			_ = e.store.Rollback(tx)
+			return fmt.Errorf("INSERT: missing value for column %q", fullCols[i])
+		}
+	}
+
+	if err := tx.Insert(stmt.TableName, out); err != nil {
+		_ = e.store.Rollback(tx)
+		return fmt.Errorf("insert: %w", err)
+	}
+
+	if err := e.store.Commit(tx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	return nil
+}
