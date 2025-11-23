@@ -551,3 +551,72 @@ func TestEngineExecute_DeleteWithWhere(t *testing.T) {
 		}
 	}
 }
+func TestEngine_InsertWithColumnList(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// create table
+	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
+	stmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	// insert with column list: NOTE we specify all columns
+	insertSQL := "INSERT INTO users(name, id, active) VALUES ('Alice', 10, true);"
+	stmt2, err := sql.Parse(insertSQL)
+	if err != nil {
+		t.Fatalf("Parse INSERT failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt2); err != nil {
+		t.Fatalf("Execute INSERT failed: %v", err)
+	}
+
+	// select and verify
+	selSQL := "SELECT * FROM users;"
+	stmt3, err := sql.Parse(selSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+	cols, rows, err := eng.Execute(stmt3)
+	if err != nil {
+		t.Fatalf("Execute SELECT failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+
+	idIdx, nameIdx, activeIdx := -1, -1, -1
+	for i, c := range cols {
+		switch c {
+		case "id":
+			idIdx = i
+		case "name":
+			nameIdx = i
+		case "active":
+			activeIdx = i
+		}
+	}
+	if idIdx < 0 || nameIdx < 0 || activeIdx < 0 {
+		t.Fatalf("unexpected columns: %#v", cols)
+	}
+
+	row := rows[0]
+	if row[idIdx].Type != sql.TypeInt || row[idIdx].I64 != 10 {
+		t.Fatalf("expected id=10, got %+v", row[idIdx])
+	}
+	if row[nameIdx].Type != sql.TypeString || row[nameIdx].S != "Alice" {
+		t.Fatalf("expected name=Alice, got %+v", row[nameIdx])
+	}
+	if row[activeIdx].Type != sql.TypeBool || row[activeIdx].B != true {
+		t.Fatalf("expected active=true, got %+v", row[activeIdx])
+	}
+}

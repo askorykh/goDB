@@ -156,74 +156,65 @@ func (e *DBEngine) executeDelete(stmt *sql.DeleteStmt) error {
 }
 
 func (e *DBEngine) executeInsert(stmt *sql.InsertStmt) error {
-	tx, err := e.store.Begin(false)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+	if !e.started {
+		return fmt.Errorf("engine not started")
 	}
 
-	// We only need column names here; types will be validated by the storage Insert.
-	fullCols, _, err := tx.Scan(stmt.TableName)
+	// Get table column names by doing a dummy SelectAll (we only use cols).
+	cols, _, err := e.SelectAll(stmt.TableName)
 	if err != nil {
-		_ = e.store.Rollback(tx)
-		return fmt.Errorf("scan: %w", err)
+		return err
 	}
 
-	// Case 1: no column list -> VALUES must match full schema order and count
+	// Case 1: no column list -> VALUES are in table order and must match length.
 	if len(stmt.Columns) == 0 {
-		if len(stmt.Values) != len(fullCols) {
-			_ = e.store.Rollback(tx)
+		if len(stmt.Values) != len(cols) {
 			return fmt.Errorf("INSERT: value count %d does not match table columns %d",
-				len(stmt.Values), len(fullCols))
+				len(stmt.Values), len(cols))
 		}
 
-		if err := tx.Insert(stmt.TableName, stmt.Values); err != nil {
-			_ = e.store.Rollback(tx)
-			return fmt.Errorf("insert: %w", err)
-		}
-		return e.store.Commit(tx)
+		return e.InsertRow(stmt.TableName, stmt.Values)
 	}
 
-	// Case 2: column list present -> map values to schema positions
-	colIndex := make(map[string]int, len(fullCols))
-	for i, name := range fullCols {
+	// Case 2: column list present.
+	if len(stmt.Columns) != len(cols) {
+		return fmt.Errorf("INSERT: for now, all columns must be specified in column list (have %d, expected %d)",
+			len(stmt.Columns), len(cols))
+	}
+
+	if len(stmt.Values) != len(stmt.Columns) {
+		return fmt.Errorf("INSERT: number of values %d does not match number of columns %d",
+			len(stmt.Values), len(stmt.Columns))
+	}
+
+	// Map column name -> index in table schema.
+	colIndex := make(map[string]int, len(cols))
+	for i, name := range cols {
 		colIndex[name] = i
 	}
 
-	if len(stmt.Columns) != len(stmt.Values) {
-		_ = e.store.Rollback(tx)
-		return fmt.Errorf("INSERT: number of columns (%d) doesn't match values count (%d)",
-			len(stmt.Columns), len(stmt.Values))
-	}
-
-	out := make([]sql.Value, len(fullCols))
-	set := make([]bool, len(fullCols)) // track which columns were assigned
+	// Build row in schema order.
+	out := make(sql.Row, len(cols))
+	seen := make([]bool, len(cols))
 
 	for i, colName := range stmt.Columns {
 		pos, ok := colIndex[colName]
 		if !ok {
-			_ = e.store.Rollback(tx)
 			return fmt.Errorf("INSERT: unknown column %q", colName)
 		}
+		if seen[pos] {
+			return fmt.Errorf("INSERT: duplicate column %q in column list", colName)
+		}
 		out[pos] = stmt.Values[i]
-		set[pos] = true
+		seen[pos] = true
 	}
 
-	// For now we require all columns to be provided (no defaults/NULL yet).
-	for i, assigned := range set {
-		if !assigned {
-			_ = e.store.Rollback(tx)
-			return fmt.Errorf("INSERT: missing value for column %q", fullCols[i])
+	// All columns must be set (we already enforced equal lengths, but check anyway).
+	for i, s := range seen {
+		if !s {
+			return fmt.Errorf("INSERT: no value provided for column %q", cols[i])
 		}
 	}
 
-	if err := tx.Insert(stmt.TableName, out); err != nil {
-		_ = e.store.Rollback(tx)
-		return fmt.Errorf("insert: %w", err)
-	}
-
-	if err := e.store.Commit(tx); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	return nil
+	return e.InsertRow(stmt.TableName, out)
 }

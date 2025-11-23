@@ -395,3 +395,28 @@ func TestParseDelete_WithSpaces(t *testing.T) {
 		t.Fatalf("unexpected WHERE: %+v", del.Where)
 	}
 }
+func TestParseInsert_WithColumnList(t *testing.T) {
+	query := "INSERT INTO users(id, name) VALUES (1, 'Alice');"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	ins, ok := stmt.(*InsertStmt)
+	if !ok {
+		t.Fatalf("expected *InsertStmt, got %T", stmt)
+	}
+
+	if ins.TableName != "users" {
+		t.Fatalf("expected table name users, got %q", ins.TableName)
+	}
+
+	if len(ins.Columns) != 2 || ins.Columns[0] != "id" || ins.Columns[1] != "name" {
+		t.Fatalf("unexpected Columns: %#v", ins.Columns)
+	}
+
+	if len(ins.Values) != 2 {
+		t.Fatalf("expected 2 values, got %d", len(ins.Values))
+	}
+}

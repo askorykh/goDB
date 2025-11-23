@@ -13,11 +13,16 @@ type CreateTableStmt struct {
 
 func (*CreateTableStmt) stmtNode() {}
 
-// InsertStmt represents a parsed INSERT INTO ... VALUES (...) statement.
+// InsertStmt represents:
+//
+//	INSERT INTO table VALUES (...)
+//	INSERT INTO table(col1, col2, ...) VALUES (...)
+//
+// If Columns is empty, it means "all columns in table order".
 type InsertStmt struct {
 	TableName string
-	Columns   []string // optional, can be empty → means full schema order
-	Values    []Value
+	Columns   []string // optional; nil/empty = no column list
+	Values    Row      // one row of literal values
 }
 
 func (*InsertStmt) stmtNode() {}
