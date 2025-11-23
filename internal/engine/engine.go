@@ -90,3 +90,19 @@ func (e *DBEngine) SelectAll(tableName string) ([]string, []sql.Row, error) {
 
 	return cols, rows, nil
 }
+
+// Execute takes a parsed SQL Statement and executes it using the engine.
+// For now it only supports CREATE TABLE statements.
+func (e *DBEngine) Execute(stmt sql.Statement) error {
+	if !e.started {
+		return fmt.Errorf("engine not started")
+	}
+
+	switch s := stmt.(type) {
+	case *sql.CreateTableStmt:
+		return e.CreateTable(s.TableName, s.Columns)
+
+	default:
+		return fmt.Errorf("unsupported statement type %T", stmt)
+	}
+}

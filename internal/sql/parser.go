@@ -8,15 +8,22 @@ import (
 // Parse parses a single SQL statement string into an AST Statement.
 // For now it only supports CREATE TABLE statements.
 func Parse(query string) (Statement, error) {
-	// Trim spaces and optional trailing semicolon.
+	// Trim leading & trailing whitespace
 	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil, fmt.Errorf("empty query")
+	}
+
+	// Remove trailing semicolon if present
 	if strings.HasSuffix(q, ";") {
 		q = strings.TrimSpace(q[:len(q)-1])
 	}
 
-	// Case-insensitive check for "CREATE TABLE".
-	up := strings.ToUpper(q)
-	if strings.HasPrefix(up, "CREATE TABLE ") {
+	// We want to detect "CREATE TABLE" regardless of case and spacing.
+	// Use Fields to normalize whitespace.
+	upper := strings.ToUpper(q)
+	tokens := strings.Fields(upper)
+	if len(tokens) >= 2 && tokens[0] == "CREATE" && tokens[1] == "TABLE" {
 		return parseCreateTable(q)
 	}
 
@@ -24,49 +31,53 @@ func Parse(query string) (Statement, error) {
 }
 
 func parseCreateTable(query string) (Statement, error) {
-	// We expect something like:
-	// CREATE TABLE users (id INT, name STRING, active BOOL)
-
-	// Strip trailing semicolon handled in Parse, so here we just parse structure.
-
-	// Find "CREATE TABLE" (case-insensitive), then get rest.
-	up := strings.ToUpper(query)
-
-	const kw = "CREATE TABLE "
-	idx := strings.Index(up, kw)
-	if idx != 0 {
-		return nil, fmt.Errorf("invalid CREATE TABLE syntax")
-	}
-
-	rest := strings.TrimSpace(query[len(kw):])
+	// At this point:
+	// - query has been trimmed
+	// - trailing ';' removed
+	// - we already know it's some form of CREATE TABLE
 
 	// Find the opening parenthesis for column list.
-	openIdx := strings.Index(rest, "(")
+	openIdx := strings.Index(query, "(")
 	if openIdx == -1 {
 		return nil, fmt.Errorf("CREATE TABLE: missing '('")
 	}
 
-	tableNamePart := strings.TrimSpace(rest[:openIdx])
-	if tableNamePart == "" {
-		return nil, fmt.Errorf("CREATE TABLE: missing table name")
-	}
-
-	// Extract column definitions between '(' and ')'.
-	closeIdx := strings.LastIndex(rest, ")")
+	// Find the closing parenthesis.
+	closeIdx := strings.LastIndex(query, ")")
 	if closeIdx == -1 || closeIdx <= openIdx {
 		return nil, fmt.Errorf("CREATE TABLE: missing or misplaced ')'")
 	}
 
-	colsPart := strings.TrimSpace(rest[openIdx+1 : closeIdx])
+	// "head" contains: CREATE   TABLE   Accounts
+	head := strings.TrimSpace(query[:openIdx])
+	// "colsPart" contains everything between '(' and ')'
+	colsPart := strings.TrimSpace(query[openIdx+1 : closeIdx])
 	if colsPart == "" {
 		return nil, fmt.Errorf("CREATE TABLE: no column definitions")
 	}
 
-	// Split by comma into individual column definitions.
+	// Extract table name from "head".
+	// Example: "create   table   Accounts" → ["create", "table", "Accounts"]
+	headTokens := strings.Fields(head)
+	if len(headTokens) < 3 {
+		return nil, fmt.Errorf("CREATE TABLE: missing table name")
+	}
+
+	// Basic keyword check (case-insensitive).
+	if strings.ToUpper(headTokens[0]) != "CREATE" || strings.ToUpper(headTokens[1]) != "TABLE" {
+		return nil, fmt.Errorf("CREATE TABLE: invalid syntax")
+	}
+
+	// Table name is the last token (works for simple "CREATE TABLE name").
+	tableName := headTokens[len(headTokens)-1]
+
+	// Split column definitions by comma.
 	colDefs := splitCommaSeparated(colsPart)
+	if len(colDefs) == 0 {
+		return nil, fmt.Errorf("CREATE TABLE: no valid columns")
+	}
 
 	columns := make([]Column, 0, len(colDefs))
-
 	for _, def := range colDefs {
 		def = strings.TrimSpace(def)
 		if def == "" {
@@ -105,11 +116,10 @@ func parseCreateTable(query string) (Statement, error) {
 		return nil, fmt.Errorf("CREATE TABLE: no valid columns")
 	}
 
-	stmt := &CreateTableStmt{
-		TableName: tableNamePart,
+	return &CreateTableStmt{
+		TableName: tableName,
 		Columns:   columns,
-	}
-	return stmt, nil
+	}, nil
 }
 
 // splitCommaSeparated splits a string by commas, but keeps it simple:

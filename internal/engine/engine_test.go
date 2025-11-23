@@ -85,3 +85,68 @@ func TestEngineCreateInsertSelectAll(t *testing.T) {
 	checkRow(rows[0], 1, "Alice", true)
 	checkRow(rows[1], 2, "Bob", false)
 }
+
+func TestEngineExecute_CreateTableAndUseIt(t *testing.T) {
+	// 1. Set up engine with memstore.
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// 2. Parse a CREATE TABLE statement.
+	query := "CREATE TABLE users (id INT, name STRING, active BOOL);"
+	stmt, err := sql.Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Sanity check: make sure parser produced the right type.
+	if _, ok := stmt.(*sql.CreateTableStmt); !ok {
+		t.Fatalf("expected *CreateTableStmt, got %T", stmt)
+	}
+
+	// 3. Execute the statement via the engine.
+	if err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// 4. Insert and select to prove the table is correctly created.
+	row1 := sql.Row{
+		{Type: sql.TypeInt, I64: 1},
+		{Type: sql.TypeString, S: "Alice"},
+		{Type: sql.TypeBool, B: true},
+	}
+	if err := eng.InsertRow("users", row1); err != nil {
+		t.Fatalf("InsertRow row1 failed: %v", err)
+	}
+
+	row2 := sql.Row{
+		{Type: sql.TypeInt, I64: 2},
+		{Type: sql.TypeString, S: "Bob"},
+		{Type: sql.TypeBool, B: false},
+	}
+	if err := eng.InsertRow("users", row2); err != nil {
+		t.Fatalf("InsertRow row2 failed: %v", err)
+	}
+
+	cols, rows, err := eng.SelectAll("users")
+	if err != nil {
+		t.Fatalf("SelectAll failed: %v", err)
+	}
+
+	expectedCols := []string{"id", "name", "active"}
+	if len(cols) != len(expectedCols) {
+		t.Fatalf("expected %d columns, got %d", len(expectedCols), len(cols))
+	}
+	for i, want := range expectedCols {
+		if cols[i] != want {
+			t.Fatalf("column %d: expected %q, got %q", i, want, cols[i])
+		}
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+}
