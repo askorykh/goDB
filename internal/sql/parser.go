@@ -13,18 +13,18 @@ func Parse(query string) (Statement, error) {
 	if q == "" {
 		return nil, fmt.Errorf("empty query")
 	}
-
+	
 	// Remove trailing semicolon if present
 	if strings.HasSuffix(q, ";") {
 		q = strings.TrimSpace(q[:len(q)-1])
 	}
-
+	
 	upper := strings.ToUpper(q)
 	tokens := strings.Fields(upper)
 	if len(tokens) < 2 {
 		return nil, fmt.Errorf("invalid SQL statement")
 	}
-
+	
 	switch tokens[0] {
 	case "CREATE":
 		if len(tokens) >= 2 && tokens[1] == "TABLE" {
@@ -40,8 +40,16 @@ func Parse(query string) (Statement, error) {
 		return parseUpdate(q)
 	case "DELETE":
 		return parseDelete(q)
+	case "BEGIN":
+		return parseBegin(q)
+	case "COMMIT":
+		return parseCommit(q)
+	case "ROLLBACK":
+		return parseRollback(q)
+	default:
+		return nil, fmt.Errorf("invalid SQL statement")
 	}
-
-	return nil, fmt.Errorf("unsupported statement (supported: CREATE TABLE, INSERT INTO, SELECT, UPDATE, DELETE)")
-
+	
+	return nil, fmt.Errorf("unsupported statement (supported: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, BEGIN, COMMIT, ROLLBACK)")
+	
 }

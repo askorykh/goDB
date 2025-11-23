@@ -852,3 +852,78 @@ func TestEngine_InsertWithNullAndDefault(t *testing.T) {
 		t.Fatalf("expected active=NULL, got %+v", row[activeIdx])
 	}
 }
+func TestEngine_SQLTransactions_CommitAndRollback(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// CREATE TABLE
+	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
+	stmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	// BEGIN; INSERT; ROLLBACK;
+	for _, q := range []string{
+		"BEGIN;",
+		"INSERT INTO users VALUES (1, 'Alice', true);",
+		"ROLLBACK;",
+	} {
+		stmt, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse failed for %q: %v", q, err)
+		}
+		if _, _, err := eng.Execute(stmt); err != nil {
+			t.Fatalf("Execute failed for %q: %v", q, err)
+		}
+	}
+
+	// No rows should be visible.
+	selectSQL := "SELECT * FROM users;"
+	selStmt, err := sql.Parse(selectSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+	_, rows, err := eng.Execute(selStmt)
+	if err != nil {
+		t.Fatalf("Execute SELECT failed: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected 0 rows after rollback, got %d", len(rows))
+	}
+
+	// BEGIN; INSERT; COMMIT;
+	for _, q := range []string{
+		"BEGIN;",
+		"INSERT INTO users VALUES (2, 'Bob', false);",
+		"COMMIT;",
+	} {
+		stmt, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse failed for %q: %v", q, err)
+		}
+		if _, _, err := eng.Execute(stmt); err != nil {
+			t.Fatalf("Execute failed for %q: %v", q, err)
+		}
+	}
+
+	// Row should be visible now.
+	selStmt2, err := sql.Parse(selectSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+	_, rows, err = eng.Execute(selStmt2)
+	if err != nil {
+		t.Fatalf("Execute SELECT failed: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row after commit, got %d", len(rows))
+	}
+}

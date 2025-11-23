@@ -74,3 +74,18 @@ type DeleteStmt struct {
 }
 
 func (*DeleteStmt) stmtNode() {}
+
+// BEGIN [TRANSACTION]
+type BeginTxStmt struct{}
+
+func (*BeginTxStmt) stmtNode() {}
+
+// COMMIT [TRANSACTION]
+type CommitTxStmt struct{}
+
+func (*CommitTxStmt) stmtNode() {}
+
+// ROLLBACK [TRANSACTION]
+type RollbackTxStmt struct{}
+
+func (*RollbackTxStmt) stmtNode() {}

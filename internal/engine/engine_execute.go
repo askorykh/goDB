@@ -22,7 +22,15 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 
 	case *sql.SelectStmt:
 		// Get full rowset from storage.
-		fullCols, fullRows, err := e.SelectAll(s.TableName)
+		var fullCols []string
+		var fullRows []sql.Row
+		var err error
+
+		if e.inTx {
+			fullCols, fullRows, err = e.selectAllInTx(e.currTx, s.TableName)
+		} else {
+			fullCols, fullRows, err = e.SelectAll(s.TableName) // existing auto-commit helper
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -45,6 +53,18 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 
 	case *sql.DeleteStmt:
 		return nil, nil, e.executeDelete(s)
+
+	case *sql.BeginTxStmt:
+		err := e.beginTx()
+		return nil, nil, err
+
+	case *sql.CommitTxStmt:
+		err := e.commitTx()
+		return nil, nil, err
+
+	case *sql.RollbackTxStmt:
+		err := e.rollbackTx()
+		return nil, nil, err
 
 	default:
 		return nil, nil, fmt.Errorf("unsupported statement type %T", stmt)

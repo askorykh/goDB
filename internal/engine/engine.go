@@ -11,6 +11,8 @@ import (
 type DBEngine struct {
 	started bool
 	store   storage.Engine
+	inTx    bool
+	currTx  storage.Tx
 }
 
 // New creates a new DBEngine instance.
@@ -19,6 +21,7 @@ func New(store storage.Engine) *DBEngine {
 	return &DBEngine{
 		started: false,
 		store:   store,
+		inTx:    false,
 	}
 }
 
@@ -114,30 +117,39 @@ func (e *DBEngine) executeUpdate(stmt *sql.UpdateStmt) error {
 		return fmt.Errorf("UPDATE without WHERE is not supported yet")
 	}
 
+	if e.inTx {
+		return e.executeUpdateInTx(e.currTx, stmt)
+	}
+
 	tx, err := e.store.Begin(false)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 
+	if err := e.executeUpdateInTx(tx, stmt); err != nil {
+		_ = e.store.Rollback(tx)
+		return err
+	}
+
+	if err := e.store.Commit(tx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+func (e *DBEngine) executeUpdateInTx(tx storage.Tx, stmt *sql.UpdateStmt) error {
 	cols, rows, err := tx.Scan(stmt.TableName)
 	if err != nil {
-		_ = e.store.Rollback(tx)
 		return fmt.Errorf("scan: %w", err)
 	}
 
 	newRows, _, err := applyUpdate(cols, rows, stmt.Where, stmt.Assignments)
 	if err != nil {
-		_ = e.store.Rollback(tx)
 		return err
 	}
 
 	if err := tx.ReplaceAll(stmt.TableName, newRows); err != nil {
-		_ = e.store.Rollback(tx)
 		return fmt.Errorf("replaceAll: %w", err)
-	}
-
-	if err := e.store.Commit(tx); err != nil {
-		return fmt.Errorf("commit: %w", err)
 	}
 
 	return nil
@@ -148,26 +160,53 @@ func (e *DBEngine) executeDelete(stmt *sql.DeleteStmt) error {
 		return fmt.Errorf("DELETE without WHERE is not supported yet")
 	}
 
+	if e.inTx {
+		return e.executeDeleteInTx(e.currTx, stmt)
+	}
+
 	tx, err := e.store.Begin(false)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 
-	cols, rows, err := tx.Scan(stmt.TableName)
-	if err != nil {
-		_ = e.store.Rollback(tx)
-		return fmt.Errorf("scan: %w", err)
-	}
-
-	newRows, _, err := applyDelete(cols, rows, stmt.Where)
-	if err != nil {
+	if err := e.executeDeleteInTx(tx, stmt); err != nil {
 		_ = e.store.Rollback(tx)
 		return err
 	}
 
+	if err := e.store.Commit(tx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+func (e *DBEngine) executeDeleteInTx(tx storage.Tx, stmt *sql.DeleteStmt) error {
+	cols, rows, err := tx.Scan(stmt.TableName)
+	if err != nil {
+		return fmt.Errorf("scan: %w", err)
+	}
+
+	newRows, _, err := applyDelete(cols, rows, stmt.Where)
 	if err := tx.ReplaceAll(stmt.TableName, newRows); err != nil {
-		_ = e.store.Rollback(tx)
 		return fmt.Errorf("replaceAll: %w", err)
+	}
+
+	return nil
+}
+
+func (e *DBEngine) executeInsert(stmt *sql.InsertStmt) error {
+	if e.inTx {
+		return e.executeInsertInTx(e.currTx, stmt)
+	}
+
+	tx, err := e.store.Begin(false)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	if err := e.executeInsertInTx(tx, stmt); err != nil {
+		_ = e.store.Rollback(tx)
+		return err
 	}
 
 	if err := e.store.Commit(tx); err != nil {
@@ -177,45 +216,39 @@ func (e *DBEngine) executeDelete(stmt *sql.DeleteStmt) error {
 	return nil
 }
 
-func (e *DBEngine) executeInsert(stmt *sql.InsertStmt) error {
-	if !e.started {
-		return fmt.Errorf("engine not started")
-	}
-
-	// Get table column names by doing a dummy SelectAll (we only use cols).
-	cols, _, err := e.SelectAll(stmt.TableName)
+// Uses an existing transaction (either currTx or a one-off).
+func (e *DBEngine) executeInsertInTx(tx storage.Tx, stmt *sql.InsertStmt) error {
+	// Use tx.Scan to get column names
+	cols, _, err := tx.Scan(stmt.TableName)
 	if err != nil {
-		return err
+		return fmt.Errorf("scan: %w", err)
 	}
 
-	// Case 1: no column list -> VALUES are in table order and must match length.
+	// No column list: values must match schema order.
 	if len(stmt.Columns) == 0 {
 		if len(stmt.Values) != len(cols) {
 			return fmt.Errorf("INSERT: value count %d does not match table columns %d",
 				len(stmt.Values), len(cols))
 		}
-
-		return e.InsertRow(stmt.TableName, stmt.Values)
+		return tx.Insert(stmt.TableName, stmt.Values)
 	}
 
-	// Case 2: column list present.
+	// Column list present; must specify all columns for now.
 	if len(stmt.Columns) != len(cols) {
 		return fmt.Errorf("INSERT: for now, all columns must be specified in column list (have %d, expected %d)",
 			len(stmt.Columns), len(cols))
 	}
-
 	if len(stmt.Values) != len(stmt.Columns) {
 		return fmt.Errorf("INSERT: number of values %d does not match number of columns %d",
 			len(stmt.Values), len(stmt.Columns))
 	}
 
-	// Map column name -> index in table schema.
+	// Map name -> index in table schema
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
 		colIndex[name] = i
 	}
 
-	// Build row in schema order.
 	out := make(sql.Row, len(cols))
 	seen := make([]bool, len(cols))
 
@@ -231,12 +264,64 @@ func (e *DBEngine) executeInsert(stmt *sql.InsertStmt) error {
 		seen[pos] = true
 	}
 
-	// All columns must be set (we already enforced equal lengths, but check anyway).
 	for i, s := range seen {
 		if !s {
 			return fmt.Errorf("INSERT: no value provided for column %q", cols[i])
 		}
 	}
 
-	return e.InsertRow(stmt.TableName, out)
+	return tx.Insert(stmt.TableName, out)
+}
+
+func (e *DBEngine) beginTx() error {
+	if !e.started {
+		return fmt.Errorf("engine not started")
+	}
+	if e.inTx {
+		return fmt.Errorf("transaction already in progress")
+	}
+
+	tx, err := e.store.Begin(false) // writeable transaction
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	e.currTx = tx
+	e.inTx = true
+	return nil
+}
+
+func (e *DBEngine) commitTx() error {
+	if !e.inTx {
+		return fmt.Errorf("no active transaction to commit")
+	}
+
+	if err := e.store.Commit(e.currTx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+
+	e.currTx = nil
+	e.inTx = false
+	return nil
+}
+
+func (e *DBEngine) rollbackTx() error {
+	if !e.inTx {
+		return fmt.Errorf("no active transaction to rollback")
+	}
+
+	if err := e.store.Rollback(e.currTx); err != nil {
+		return fmt.Errorf("rollback tx: %w", err)
+	}
+
+	e.currTx = nil
+	e.inTx = false
+	return nil
+}
+func (e *DBEngine) selectAllInTx(tx storage.Tx, table string) ([]string, []sql.Row, error) {
+	cols, rows, err := tx.Scan(table)
+	if err != nil {
+		return nil, nil, fmt.Errorf("scan: %w", err)
+	}
+	return cols, rows, nil
 }
