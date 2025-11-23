@@ -37,12 +37,17 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 
 		// WHERE
 		if s.Where != nil {
-			fullRows = filterRowsWhere(fullCols, fullRows, s.Where)
+			fullRows, err = filterRowsWhere(fullCols, fullRows, s.Where)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 
 		// ORDER BY
 		if s.OrderBy != nil {
-			sortRows(fullCols, fullRows, s.OrderBy)
+			if err := sortRows(fullCols, fullRows, s.OrderBy); err != nil {
+				return nil, nil, err
+			}
 		}
 
 		// LIMIT
@@ -83,15 +88,14 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 	}
 }
 
-func sortRows(cols []string, rows []sql.Row, ob *sql.OrderByClause) {
+func sortRows(cols []string, rows []sql.Row, ob *sql.OrderByClause) error {
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
 		colIndex[name] = i
 	}
 	idx, ok := colIndex[ob.Column]
 	if !ok {
-		// Unknown ORDER BY column: do nothing (or log)
-		return
+		return fmt.Errorf("unknown column %q in ORDER BY", ob.Column)
 	}
 
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -99,6 +103,7 @@ func sortRows(cols []string, rows []sql.Row, ob *sql.OrderByClause) {
 		b := rows[j][idx]
 		cmp, err := compareValues(a, b)
 		if err != nil {
+			// keep stable ordering on comparison errors
 			return false
 		}
 		if ob.Desc {
@@ -106,4 +111,6 @@ func sortRows(cols []string, rows []sql.Row, ob *sql.OrderByClause) {
 		}
 		return cmp < 0
 	})
+
+	return nil
 }

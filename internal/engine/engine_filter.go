@@ -7,7 +7,7 @@ import (
 )
 
 // filterRowsWhere filters rows according to a simple WHERE expression (column = literal).
-func filterRowsWhere(cols []string, rows []sql.Row, where *sql.WhereExpr) []sql.Row {
+func filterRowsWhere(cols []string, rows []sql.Row, where *sql.WhereExpr) ([]sql.Row, error) {
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
 		colIndex[name] = i
@@ -15,8 +15,7 @@ func filterRowsWhere(cols []string, rows []sql.Row, where *sql.WhereExpr) []sql.
 
 	idx, ok := colIndex[where.Column]
 	if !ok {
-		// Unknown column -> no matches
-		return nil
+		return nil, fmt.Errorf("unknown column %q in WHERE clause", where.Column)
 	}
 
 	out := make([]sql.Row, 0, len(rows))
@@ -28,7 +27,7 @@ func filterRowsWhere(cols []string, rows []sql.Row, where *sql.WhereExpr) []sql.
 			out = append(out, r)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // valuesEqual compares two sql.Value for equality, considering their type.
