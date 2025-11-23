@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"goDB/internal/sql"
 	"io"
+	"math"
 )
 
 const (
@@ -193,6 +194,104 @@ func readRow(r io.Reader, numCols int) (sql.Row, error) {
 
 		default:
 			return nil, fmt.Errorf("readRow: unsupported value type %v", vt)
+		}
+	}
+
+	return row, nil
+}
+
+// readRowFromBytes decodes a row from a byte slice, given numCols.
+// It's the same encoding as readRow, but works on a buffer instead of io.Reader.
+func readRowFromBytes(buf []byte, numCols int) (sql.Row, error) {
+	row := make(sql.Row, numCols)
+	offset := 0
+
+	readByte := func() (byte, error) {
+		if offset >= len(buf) {
+			return 0, fmt.Errorf("readRowFromBytes: unexpected end of buffer")
+		}
+		b := buf[offset]
+		offset++
+		return b, nil
+	}
+
+	_ = func() (uint16, error) {
+		if offset+2 > len(buf) {
+			return 0, fmt.Errorf("readRowFromBytes: unexpected end of buffer")
+		}
+		v := binary.LittleEndian.Uint16(buf[offset : offset+2])
+		offset += 2
+		return v, nil
+	}
+
+	readUint32 := func() (uint32, error) {
+		if offset+4 > len(buf) {
+			return 0, fmt.Errorf("readRowFromBytes: unexpected end of buffer")
+		}
+		v := binary.LittleEndian.Uint32(buf[offset : offset+4])
+		offset += 4
+		return v, nil
+	}
+
+	readInt64 := func() (int64, error) {
+		if offset+8 > len(buf) {
+			return 0, fmt.Errorf("readRowFromBytes: unexpected end of buffer")
+		}
+		v := int64(binary.LittleEndian.Uint64(buf[offset : offset+8]))
+		offset += 8
+		return v, nil
+	}
+
+	readFloat64 := func() (float64, error) {
+		if offset+8 > len(buf) {
+			return 0, fmt.Errorf("readRowFromBytes: unexpected end of buffer")
+		}
+		bits := binary.LittleEndian.Uint64(buf[offset : offset+8])
+		offset += 8
+		return math.Float64frombits(bits), nil
+	}
+
+	for i := 0; i < numCols; i++ {
+		tByte, err := readByte()
+		if err != nil {
+			return nil, err
+		}
+		vt := sql.DataType(tByte)
+
+		switch vt {
+		case sql.TypeInt:
+			v, err := readInt64()
+			if err != nil {
+				return nil, err
+			}
+			row[i] = sql.Value{Type: sql.TypeInt, I64: v}
+		case sql.TypeFloat:
+			v, err := readFloat64()
+			if err != nil {
+				return nil, err
+			}
+			row[i] = sql.Value{Type: sql.TypeFloat, F64: v}
+		case sql.TypeString:
+			l, err := readUint32()
+			if err != nil {
+				return nil, err
+			}
+			if offset+int(l) > len(buf) {
+				return nil, fmt.Errorf("readRowFromBytes: invalid string length")
+			}
+			s := string(buf[offset : offset+int(l)])
+			offset += int(l)
+			row[i] = sql.Value{Type: sql.TypeString, S: s}
+		case sql.TypeBool:
+			b, err := readByte()
+			if err != nil {
+				return nil, err
+			}
+			row[i] = sql.Value{Type: sql.TypeBool, B: b != 0}
+		case sql.TypeNull:
+			row[i] = sql.Value{Type: sql.TypeNull}
+		default:
+			return nil, fmt.Errorf("readRowFromBytes: unsupported type %v", vt)
 		}
 	}
 
