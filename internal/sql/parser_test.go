@@ -67,13 +67,6 @@ func TestParseCreateTable_CaseAndSpaces(t *testing.T) {
 	}
 }
 
-func TestParseCreateTable_Unsupported(t *testing.T) {
-	_, err := Parse("SELECT * FROM users;")
-	if err == nil {
-		t.Fatalf("expected error for unsupported statement, got nil")
-	}
-}
-
 func TestParseInsert_Basic(t *testing.T) {
 	query := "INSERT INTO users VALUES (1, 'Alice', true);"
 
@@ -138,5 +131,47 @@ func TestParseInsert_CaseAndSpaces(t *testing.T) {
 	}
 	if ins.Values[2].Type != TypeBool || ins.Values[2].B != false {
 		t.Fatalf("unexpected third value: %+v", ins.Values[2])
+	}
+}
+func TestParseSelect_Basic(t *testing.T) {
+	query := "SELECT * FROM users;"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	sel, ok := stmt.(*SelectStmt)
+	if !ok {
+		t.Fatalf("expected *SelectStmt, got %T", stmt)
+	}
+
+	if sel.TableName != "users" {
+		t.Fatalf("expected table name %q, got %q", "users", sel.TableName)
+	}
+}
+
+func TestParseSelect_CaseAndSpaces(t *testing.T) {
+	query := "   select   *   from   Accounts   ; "
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	sel, ok := stmt.(*SelectStmt)
+	if !ok {
+		t.Fatalf("expected *SelectStmt, got %T", stmt)
+	}
+
+	if sel.TableName != "Accounts" {
+		t.Fatalf("expected table name %q, got %q", "Accounts", sel.TableName)
+	}
+}
+
+func TestParseSelect_OnlyStarSupported(t *testing.T) {
+	_, err := Parse("SELECT id, name FROM users;")
+	if err == nil {
+		t.Fatalf("expected error for non-* SELECT, got nil")
 	}
 }

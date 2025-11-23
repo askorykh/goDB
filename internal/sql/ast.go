@@ -20,3 +20,13 @@ type InsertStmt struct {
 }
 
 func (*InsertStmt) stmtNode() {}
+
+// SelectStmt represents a parsed SELECT statement.
+// For now we only support:
+//
+//	SELECT * FROM tableName;
+type SelectStmt struct {
+	TableName string
+}
+
+func (*SelectStmt) stmtNode() {}

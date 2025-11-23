@@ -35,6 +35,8 @@ func Parse(query string) (Statement, error) {
 		if len(tokens) >= 2 && tokens[1] == "INTO" {
 			return parseInsert(q)
 		}
+	case "SELECT":
+		return parseSelect(q)
 	}
 
 	return nil, fmt.Errorf("unsupported statement (only CREATE TABLE is supported for now)")
@@ -258,4 +260,58 @@ func splitCommaSeparated(s string) []string {
 		}
 	}
 	return out
+}
+
+// parseSelect parses a very simple SELECT statement.
+// Supported forms (case-insensitive, flexible spaces):
+//
+//	SELECT * FROM users;
+//	select  *   from   Accounts
+func parseSelect(query string) (Statement, error) {
+	// query is trimmed and has no trailing semicolon here.
+
+	upper := strings.ToUpper(query)
+	tokens := strings.Fields(upper)
+	if len(tokens) < 4 {
+		return nil, fmt.Errorf("SELECT: incomplete statement")
+	}
+
+	// We only support: SELECT * FROM <table>
+	// So tokens should start with: SELECT, *, FROM
+	if tokens[0] != "SELECT" {
+		return nil, fmt.Errorf("SELECT: expected SELECT")
+	}
+	if tokens[1] != "*" {
+		return nil, fmt.Errorf("SELECT: only SELECT * is supported for now")
+	}
+	if tokens[2] != "FROM" {
+		return nil, fmt.Errorf("SELECT: expected FROM after SELECT *")
+	}
+
+	// We need the table name as it appears in the original query (to preserve case),
+	// not the uppercased tokens, so we re-parse from the original query string.
+	// Strategy:
+	//   - find "FROM" (case-insensitive)
+	//   - take whatever comes after as table name (trimmed)
+	idxFrom := strings.Index(upper, "FROM")
+	if idxFrom == -1 {
+		return nil, fmt.Errorf("SELECT: FROM not found")
+	}
+
+	afterFrom := strings.TrimSpace(query[idxFrom+len("FROM"):])
+	if afterFrom == "" {
+		return nil, fmt.Errorf("SELECT: missing table name")
+	}
+
+	// Table name for now is the first token after FROM (no alias, no joins).
+	tableTokens := strings.Fields(afterFrom)
+	if len(tableTokens) == 0 {
+		return nil, fmt.Errorf("SELECT: missing table name")
+	}
+
+	tableName := tableTokens[0]
+
+	return &SelectStmt{
+		TableName: tableName,
+	}, nil
 }
