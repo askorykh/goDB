@@ -10,10 +10,10 @@ import (
 func filterRowsWhere(cols []string, rows []sql.Row, where *sql.WhereExpr) ([]sql.Row, error) {
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
-		colIndex[name] = i
+		colIndex[strings.ToLower(name)] = i
 	}
 
-	idx, ok := colIndex[where.Column]
+	idx, ok := colIndex[strings.ToLower(where.Column)]
 	if !ok {
 		return nil, fmt.Errorf("unknown column %q in WHERE clause", where.Column)
 	}
@@ -59,12 +59,12 @@ func projectColumns(allCols []string, rows []sql.Row, requestedCols []string) ([
 	// Build name -> index map from all columns.
 	colIndex := make(map[string]int, len(allCols))
 	for i, name := range allCols {
-		colIndex[name] = i
+		colIndex[strings.ToLower(name)] = i
 	}
 
 	indexes := make([]int, len(requestedCols))
 	for i, name := range requestedCols {
-		idx, ok := colIndex[name]
+		idx, ok := colIndex[strings.ToLower(name)]
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown column %q in SELECT list", name)
 		}
