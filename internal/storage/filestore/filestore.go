@@ -168,37 +168,60 @@ func (e *FileEngine) Begin(readOnly bool) (storage.Tx, error) {
 }
 
 func (e *FileEngine) Commit(tx storage.Tx) error {
-	ft, ok := tx.(*fileTx)
-	if ok {
-		// For write transactions, append COMMIT and sync WAL.
-		if !ft.readOnly && ft.id != 0 {
-			if err := e.wal.appendCommit(ft.id); err != nil {
-				return fmt.Errorf("filestore: WAL COMMIT: %w", err)
-			}
-			if err := e.wal.Sync(); err != nil {
-				return fmt.Errorf("filestore: WAL sync on commit: %w", err)
-			}
-		}
-		ft.closed = true
+	ft, err := e.validateTx(tx)
+	if err != nil {
+		return err
 	}
+
+	// For write transactions, append COMMIT and sync WAL.
+	if !ft.readOnly && ft.id != 0 {
+		if err := e.wal.appendCommit(ft.id); err != nil {
+			return fmt.Errorf("filestore: WAL COMMIT: %w", err)
+		}
+		if err := e.wal.Sync(); err != nil {
+			return fmt.Errorf("filestore: WAL sync on commit: %w", err)
+		}
+	}
+
+	ft.closed = true
 	return nil
 }
 
 func (e *FileEngine) Rollback(tx storage.Tx) error {
-	ft, ok := tx.(*fileTx)
-	if ok {
-		// Still no actual undo on disk, but we log ROLLBACK for future recovery logic.
-		if !ft.readOnly && ft.id != 0 {
-			if err := e.wal.appendRollback(ft.id); err != nil {
-				return fmt.Errorf("filestore: WAL ROLLBACK: %w", err)
-			}
-			if err := e.wal.Sync(); err != nil {
-				return fmt.Errorf("filestore: WAL sync on rollback: %w", err)
-			}
-		}
-		ft.closed = true
+	ft, err := e.validateTx(tx)
+	if err != nil {
+		return err
 	}
+
+	// Still no actual undo on disk, but we log ROLLBACK for future recovery logic.
+	if !ft.readOnly && ft.id != 0 {
+		if err := e.wal.appendRollback(ft.id); err != nil {
+			return fmt.Errorf("filestore: WAL ROLLBACK: %w", err)
+		}
+		if err := e.wal.Sync(); err != nil {
+			return fmt.Errorf("filestore: WAL sync on rollback: %w", err)
+		}
+	}
+
+	ft.closed = true
 	return nil
+}
+
+func (e *FileEngine) validateTx(tx storage.Tx) (*fileTx, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("filestore: transaction is nil")
+	}
+
+	ft, ok := tx.(*fileTx)
+	if !ok {
+		return nil, fmt.Errorf("filestore: invalid transaction type")
+	}
+
+	if ft.closed {
+		return nil, fmt.Errorf("filestore: tx is closed")
+	}
+
+	return ft, nil
 }
 
 // fileTx implements storage.Tx for FileEngine.
