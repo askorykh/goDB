@@ -1,7 +1,9 @@
 package filestore
 
 import (
+	"errors"
 	"goDB/internal/sql"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -129,23 +131,40 @@ func TestFilestore_ReplaceAll(t *testing.T) {
 	}
 
 	// Insert initial data
-	tx, _ := fs.Begin(false)
-	_ = tx.Insert("flags", sql.Row{{Type: sql.TypeInt, I64: 1}, {Type: sql.TypeBool, B: true}})
-	_ = tx.Insert("flags", sql.Row{{Type: sql.TypeInt, I64: 2}, {Type: sql.TypeBool, B: false}})
-	_ = fs.Commit(tx)
+	tx, err := fs.Begin(false)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	if err := tx.Insert("flags", sql.Row{{Type: sql.TypeInt, I64: 1}, {Type: sql.TypeBool, B: true}}); err != nil {
+		t.Fatalf("Insert1 failed: %v", err)
+	}
+	if err := tx.Insert("flags", sql.Row{{Type: sql.TypeInt, I64: 2}, {Type: sql.TypeBool, B: false}}); err != nil {
+		t.Fatalf("Insert2 failed: %v", err)
+	}
+	if err := fs.Commit(tx); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
 
 	// Replace all
-	tx2, _ := fs.Begin(false)
+	tx2, err := fs.Begin(false)
+	if err != nil {
+		t.Fatalf("Begin2 failed: %v", err)
+	}
 	newRows := []sql.Row{
 		{{Type: sql.TypeInt, I64: 99}, {Type: sql.TypeBool, B: false}},
 	}
 	if err := tx2.ReplaceAll("flags", newRows); err != nil {
 		t.Fatalf("ReplaceAll failed: %v", err)
 	}
-	_ = fs.Commit(tx2)
+	if err := fs.Commit(tx2); err != nil {
+		t.Fatalf("Commit2 failed: %v", err)
+	}
 
 	// Read back
-	tx3, _ := fs.Begin(true)
+	tx3, err := fs.Begin(true)
+	if err != nil {
+		t.Fatalf("Begin3 failed: %v", err)
+	}
 	_, rows, err := tx3.Scan("flags")
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
@@ -167,16 +186,94 @@ func TestFilestore_Rollback_NoUndo(t *testing.T) {
 		{Name: "id", Type: sql.TypeInt},
 	}
 
-	_ = fs.CreateTable("t", cols)
+	if err := fs.CreateTable("t", cols); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
 
-	tx, _ := fs.Begin(false)
-	_ = tx.Insert("t", sql.Row{{Type: sql.TypeInt, I64: 1}})
-	_ = fs.Rollback(tx) // does NOT undo writes
+	tx, err := fs.Begin(false)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	if err := tx.Insert("t", sql.Row{{Type: sql.TypeInt, I64: 1}}); err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+	if err := fs.Rollback(tx); err != nil {
+		t.Fatalf("Rollback failed: %v", err)
+	} // does NOT undo writes
 
 	// Scan should still see row
-	tx2, _ := fs.Begin(true)
-	_, rows, _ := tx2.Scan("t")
+	tx2, err := fs.Begin(true)
+	if err != nil {
+		t.Fatalf("Begin2 failed: %v", err)
+	}
+	_, rows, err := tx2.Scan("t")
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+}
+
+func TestFilestore_CommitRollbackValidation(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := New(dir)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	if err := fs.Commit(nil); err == nil {
+		t.Fatalf("expected error committing nil tx")
+	}
+	if err := fs.Rollback(nil); err == nil {
+		t.Fatalf("expected error rolling back nil tx")
+	}
+
+	// Commit marks transaction closed.
+	tx, err := fs.Begin(false)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	if err := fs.Commit(tx); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+	if err := fs.Commit(tx); err == nil {
+		t.Fatalf("expected commit on closed tx to fail")
+	}
+
+	// Rollback also closes the transaction.
+	tx2, err := fs.Begin(false)
+	if err != nil {
+		t.Fatalf("Begin2 failed: %v", err)
+	}
+	if err := fs.Rollback(tx2); err != nil {
+		t.Fatalf("Rollback failed: %v", err)
+	}
+	if err := fs.Rollback(tx2); err == nil {
+		t.Fatalf("expected rollback on closed tx to fail")
+	}
+}
+
+func TestFilestore_CreateTableTooManyColumns(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := New(dir)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	cols := make([]sql.Column, 0x10000)
+	for i := range cols {
+		cols[i] = sql.Column{Name: "c", Type: sql.TypeInt}
+	}
+
+	err = fs.CreateTable("big", cols)
+	if err == nil {
+		t.Fatalf("expected error for too many columns")
+	}
+
+	// Ensure the file is not left behind when table creation fails.
+	path := filepath.Join(dir, "big.godb")
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("table file should not remain after failure")
 	}
 }
