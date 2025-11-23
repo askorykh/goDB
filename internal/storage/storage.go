@@ -2,6 +2,9 @@ package storage
 
 import "goDB/internal/sql"
 
+type RowPredicate func(row sql.Row) (bool, error)
+type RowUpdater func(row sql.Row) (sql.Row, error)
+
 // Tx represents a storage-level transaction.
 //
 // For now, it only supports inserting rows into a table.
@@ -14,6 +17,9 @@ type Tx interface {
 	// ReplaceAll replaces the entire rowset of a table.
 	// Used for simple UPDATE/DELETE implementations in the engine.
 	ReplaceAll(tableName string, rows []sql.Row) error
+
+	DeleteWhere(tableName string, pred RowPredicate) error
+	UpdateWhere(tableName string, pred RowPredicate, updater RowUpdater) error
 }
 
 // Engine is a storage engine that can create and manage transactions.

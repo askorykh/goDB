@@ -2,6 +2,7 @@ package filestore
 
 import (
 	"goDB/internal/sql"
+	"goDB/internal/storage"
 	"os"
 	"path/filepath"
 	"testing"
@@ -215,5 +216,201 @@ func TestFilestore_Recovery_WalExistsAndGrows(t *testing.T) {
 	}
 	if info.Size() <= int64(len("GODBWAL2")) {
 		t.Fatalf("wal.log too small, no records? size=%d", info.Size())
+	}
+}
+func TestFilestore_Recovery_Delete_Replayed(t *testing.T) {
+	dir := t.TempDir()
+
+	fs1, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(fs1) failed: %v", err)
+	}
+
+	cols := []sql.Column{
+		{Name: "id", Type: sql.TypeInt},
+	}
+	if err := fs1.CreateTable("t", cols); err != nil {
+		t.Fatalf("CreateTable(t) failed: %v", err)
+	}
+
+	// Insert id=1 and id=2 in committed tx
+	tx1, _ := fs1.Begin(false)
+	_ = tx1.Insert("t", sql.Row{{Type: sql.TypeInt, I64: 1}})
+	_ = tx1.Insert("t", sql.Row{{Type: sql.TypeInt, I64: 2}})
+	if err := fs1.Commit(tx1); err != nil {
+		t.Fatalf("Commit(tx1) failed: %v", err)
+	}
+
+	// Delete id=2 and commit
+	tx2, _ := fs1.Begin(false)
+	pred := func(row sql.Row) (bool, error) {
+		return row[0].I64 == 2, nil
+	}
+	if err := tx2.DeleteWhere("t", storage.RowPredicate(pred)); err != nil {
+		t.Fatalf("DeleteWhere failed: %v", err)
+	}
+	if err := fs1.Commit(tx2); err != nil {
+		t.Fatalf("Commit(tx2) failed: %v", err)
+	}
+
+	// Restart
+	fs2, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(fs2) failed: %v", err)
+	}
+
+	_, rows := scanAll(t, fs2, "t")
+	if len(rows) != 1 || rows[0][0].I64 != 1 {
+		t.Fatalf("after restart: expected only id=1, got rows=%v", rows)
+	}
+}
+func TestFilestore_Recovery_Delete_RollbackIgnored(t *testing.T) {
+	dir := t.TempDir()
+
+	fs1, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(fs1) failed: %v", err)
+	}
+
+	cols := []sql.Column{
+		{Name: "id", Type: sql.TypeInt},
+	}
+	if err := fs1.CreateTable("t", cols); err != nil {
+		t.Fatalf("CreateTable(t) failed: %v", err)
+	}
+
+	// Insert committed rows: 1,2
+	tx1, _ := fs1.Begin(false)
+	_ = tx1.Insert("t", sql.Row{{Type: sql.TypeInt, I64: 1}})
+	_ = tx1.Insert("t", sql.Row{{Type: sql.TypeInt, I64: 2}})
+	if err := fs1.Commit(tx1); err != nil {
+		t.Fatalf("Commit(tx1) failed: %v", err)
+	}
+
+	// Delete id=2 but rollback
+	tx2, _ := fs1.Begin(false)
+	pred := func(row sql.Row) (bool, error) {
+		return row[0].I64 == 2, nil
+	}
+	if err := tx2.DeleteWhere("t", storage.RowPredicate(pred)); err != nil {
+		t.Fatalf("DeleteWhere failed: %v", err)
+	}
+	if err := fs1.Rollback(tx2); err != nil {
+		t.Fatalf("Rollback(tx2) failed: %v", err)
+	}
+
+	// Before restart (in-process) we might see id=1 only (no undo),
+	// but after restart WAL-based recovery must ignore rolled-back deletes.
+	fs2, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(fs2) failed: %v", err)
+	}
+
+	_, rows := scanAll(t, fs2, "t")
+	if len(rows) != 2 {
+		t.Fatalf("after restart: expected 2 rows (rollback of delete), got %d", len(rows))
+	}
+}
+func TestFilestore_Recovery_Update_Replayed(t *testing.T) {
+	dir := t.TempDir()
+
+	fs1, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(fs1) failed: %v", err)
+	}
+
+	cols := []sql.Column{
+		{Name: "id", Type: sql.TypeInt},
+		{Name: "name", Type: sql.TypeString},
+	}
+	if err := fs1.CreateTable("users", cols); err != nil {
+		t.Fatalf("CreateTable(users) failed: %v", err)
+	}
+
+	tx1, _ := fs1.Begin(false)
+	_ = tx1.Insert("users", sql.Row{
+		{Type: sql.TypeInt, I64: 1},
+		{Type: sql.TypeString, S: "Alice"},
+	})
+	if err := fs1.Commit(tx1); err != nil {
+		t.Fatalf("Commit(tx1) failed: %v", err)
+	}
+
+	// Update name from Alice -> Bob and commit
+	tx2, _ := fs1.Begin(false)
+	pred := func(r sql.Row) (bool, error) {
+		return r[0].I64 == 1, nil
+	}
+	updater := func(r sql.Row) (sql.Row, error) {
+		r[1].S = "Bob"
+		return r, nil
+	}
+	if err := tx2.UpdateWhere("users", storage.RowPredicate(pred), storage.RowUpdater(updater)); err != nil {
+		t.Fatalf("UpdateWhere failed: %v", err)
+	}
+	if err := fs1.Commit(tx2); err != nil {
+		t.Fatalf("Commit(tx2) failed: %v", err)
+	}
+
+	fs2, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(fs2) failed: %v", err)
+	}
+
+	_, rows := scanAll(t, fs2, "users")
+	if len(rows) != 1 || rows[0][1].S != "Bob" {
+		t.Fatalf("after restart: expected name=Bob, got rows=%v", rows)
+	}
+}
+func TestFilestore_Recovery_Update_RollbackIgnored(t *testing.T) {
+	dir := t.TempDir()
+
+	fs1, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(fs1) failed: %v", err)
+	}
+
+	cols := []sql.Column{
+		{Name: "id", Type: sql.TypeInt},
+		{Name: "name", Type: sql.TypeString},
+	}
+	if err := fs1.CreateTable("users", cols); err != nil {
+		t.Fatalf("CreateTable(users) failed: %v", err)
+	}
+
+	tx1, _ := fs1.Begin(false)
+	_ = tx1.Insert("users", sql.Row{
+		{Type: sql.TypeInt, I64: 1},
+		{Type: sql.TypeString, S: "Alice"},
+	})
+	if err := fs1.Commit(tx1); err != nil {
+		t.Fatalf("Commit(tx1) failed: %v", err)
+	}
+
+	// Update Alice -> Bob but rollback
+	tx2, _ := fs1.Begin(false)
+	pred := func(r sql.Row) (bool, error) {
+		return r[0].I64 == 1, nil
+	}
+	updater := func(r sql.Row) (sql.Row, error) {
+		r[1].S = "Bob"
+		return r, nil
+	}
+	if err := tx2.UpdateWhere("users", storage.RowPredicate(pred), storage.RowUpdater(updater)); err != nil {
+		t.Fatalf("UpdateWhere failed: %v", err)
+	}
+	if err := fs1.Rollback(tx2); err != nil {
+		t.Fatalf("Rollback(tx2) failed: %v", err)
+	}
+
+	// After restart, WAL should ignore this rolled-back update, so we see Alice.
+	fs2, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(fs2) failed: %v", err)
+	}
+
+	_, rows := scanAll(t, fs2, "users")
+	if len(rows) != 1 || rows[0][1].S != "Alice" {
+		t.Fatalf("after restart: expected name=Alice, got rows=%v", rows)
 	}
 }

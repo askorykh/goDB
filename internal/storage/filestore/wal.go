@@ -35,13 +35,15 @@ import (
 //                  row data:     repeated rowCount times
 
 const (
-	walMagic = "GODBWAL2" // 8 bytes
+	walMagic = "GODBWAL2"
 
 	walRecBegin      uint8 = 1
 	walRecCommit     uint8 = 2
 	walRecRollback   uint8 = 3
 	walRecInsert     uint8 = 4
 	walRecReplaceAll uint8 = 5
+	walRecDelete     uint8 = 6
+	walRecUpdate     uint8 = 7
 )
 
 // walLogger is a simple append-only WAL writer.
@@ -217,5 +219,40 @@ func (w *walLogger) writeRecordHeader(txID uint64, recType uint8, table string, 
 		return err
 	}
 
+	return nil
+}
+func (w *walLogger) appendDelete(txID uint64, table string, row sql.Row) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.f == nil {
+		return fmt.Errorf("wal: closed")
+	}
+
+	if err := w.writeRecordHeader(txID, walRecDelete, table, 1); err != nil {
+		return err
+	}
+	if err := writeRow(w.f, row); err != nil {
+		return fmt.Errorf("wal: write delete row: %w", err)
+	}
+	return nil
+}
+
+func (w *walLogger) appendUpdate(txID uint64, table string, oldRow, newRow sql.Row) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.f == nil {
+		return fmt.Errorf("wal: closed")
+	}
+
+	// rowCount = 2: [oldRow, newRow]
+	if err := w.writeRecordHeader(txID, walRecUpdate, table, 2); err != nil {
+		return err
+	}
+	if err := writeRow(w.f, oldRow); err != nil {
+		return fmt.Errorf("wal: write old row in update: %w", err)
+	}
+	if err := writeRow(w.f, newRow); err != nil {
+		return fmt.Errorf("wal: write new row in update: %w", err)
+	}
 	return nil
 }

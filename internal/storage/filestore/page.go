@@ -101,23 +101,46 @@ func (p pageBuf) insertRow(rowBytes []byte) (uint16, error) {
 	freeStart := p.freeStart()
 
 	rowLen := uint16(len(rowBytes))
-	// space needed = rowLen + 4 bytes for new slot
-	needed := int(rowLen) + 4
 
+	// Check if we have a deleted slot we can reuse.
+	var reuseSlot *uint16
+	for i := uint16(0); i < nSlots; i++ {
+		off, length := p.getSlot(i)
+		if off == 0xFFFF && length == 0 {
+			reuseSlot = &i
+			break
+		}
+	}
+
+	neededForRow := int(rowLen)
+	neededForNewSlot := 4 // each slot: offset uint16 + length uint16
+
+	// Compute how much space we need in total
+	needed := neededForRow
+	if reuseSlot == nil {
+		needed += neededForNewSlot
+	}
+
+	// Current free end = start of slot directory
 	freeEnd := PageSize - int(nSlots)*4
+
 	if int(freeStart)+needed > freeEnd {
 		return 0, fmt.Errorf("page: not enough free space")
 	}
 
-	// copy row at freeStart
+	// Write row bytes at freeStart
 	copy(p[freeStart:int(freeStart)+len(rowBytes)], rowBytes)
 
-	// new slot index
-	slotIdx := nSlots
-	p.setSlot(slotIdx, freeStart, rowLen)
+	var slotIdx uint16
+	if reuseSlot != nil {
+		slotIdx = *reuseSlot
+	} else {
+		slotIdx = nSlots
+		p.setNumSlots(nSlots + 1)
+	}
 
-	// update header
-	p.setNumSlots(nSlots + 1)
+	// Point slot to row
+	p.setSlot(slotIdx, freeStart, rowLen)
 	p.setFreeStart(freeStart + rowLen)
 
 	return slotIdx, nil
@@ -148,4 +171,54 @@ func (p pageBuf) iterateRows(numCols int, fn func(slot uint16, row sql.Row) erro
 		}
 	}
 	return nil
+}
+
+func (p pageBuf) deleteSlot(i uint16) {
+	// Capture existing offset/length so we can reclaim trailing space if possible.
+	off, length := p.getSlot(i)
+
+	// Mark as deleted. We use 0xFFFF/0 as the “tombstone” value.
+	p.setSlot(i, 0xFFFF, 0)
+
+	// If this row occupied the contiguous end of the in-use area, rewind freeStart
+	// to reclaim space. We walk backwards through rows that end at the current
+	// freeStart so consecutive deletions reclaim space in order of most recent
+	// inserts.
+	freeStart := p.freeStart()
+	if off != 0xFFFF && length != 0 {
+		if end := off + length; end == freeStart {
+			newFreeStart := off
+			for {
+				progressed := false
+				for idx := uint16(0); idx < p.numSlots(); idx++ {
+					o, l := p.getSlot(idx)
+					if o == 0xFFFF || l == 0 {
+						continue
+					}
+					if o+l == newFreeStart {
+						newFreeStart = o
+						progressed = true
+					}
+				}
+				if !progressed {
+					break
+				}
+			}
+			p.setFreeStart(newFreeStart)
+		}
+	}
+
+	// Shrink slot directory by dropping tombstones at the end. This allows
+	// future inserts to reclaim the slot-directory space in addition to row data.
+	nSlots := p.numSlots()
+	for nSlots > 0 {
+		lastIdx := nSlots - 1
+		o, l := p.getSlot(lastIdx)
+		if o == 0xFFFF && l == 0 {
+			nSlots--
+			p.setNumSlots(nSlots)
+			continue
+		}
+		break
+	}
 }
