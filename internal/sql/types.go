@@ -8,6 +8,7 @@ const (
 	TypeFloat
 	TypeString
 	TypeBool
+	TypeNull // represents a NULL/DEFAULT literal
 )
 
 // Value represents a single cell in a table (one column in one row).

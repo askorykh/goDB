@@ -42,6 +42,10 @@ func parseLiteral(tok string) (Value, error) {
 		return Value{Type: TypeBool, B: false}, nil
 	}
 
+	if upper == "NULL" || upper == "DEFAULT" {
+		return Value{Type: TypeNull}, nil
+	}
+
 	// String literal with single quotes
 	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
 		inner := s[1 : len(s)-1]

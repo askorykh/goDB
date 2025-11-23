@@ -226,6 +226,8 @@ func formatValue(v sql.Value) string {
 			return "true"
 		}
 		return "false"
+	case sql.TypeNull:
+		return "NULL"
 	default:
 		return "NULL"
 	}

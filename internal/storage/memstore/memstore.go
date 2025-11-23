@@ -163,9 +163,9 @@ func (tx *memTx) Insert(tableName string, row sql.Row) error {
 
 	// Type check each value against the column definition.
 	for i, col := range t.cols {
-		val := row[i]
-		if val.Type != col.Type {
-			return fmt.Errorf("type mismatch for column %q: expected %v, got %v", col.Name, col.Type, val.Type)
+		if row[i].Type != col.Type && row[i].Type != sql.TypeNull {
+			return fmt.Errorf("type mismatch for column %q: expected %v, got %v",
+				col.Name, col.Type, row[i].Type)
 		}
 	}
 

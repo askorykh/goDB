@@ -783,3 +783,72 @@ func TestEngine_ListTablesAndSchema(t *testing.T) {
 		t.Fatalf("expected error for missing table schema")
 	}
 }
+func TestEngine_InsertWithNullAndDefault(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// CREATE TABLE
+	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
+	stmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	// INSERT with NULL and DEFAULT
+	insertSQL := "INSERT INTO users(id, name, active) VALUES (1, DEFAULT, NULL);"
+	stmt2, err := sql.Parse(insertSQL)
+	if err != nil {
+		t.Fatalf("Parse INSERT failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt2); err != nil {
+		t.Fatalf("Execute INSERT failed: %v", err)
+	}
+
+	// SELECT and verify
+	selectSQL := "SELECT * FROM users;"
+	stmt3, err := sql.Parse(selectSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+	cols, rows, err := eng.Execute(stmt3)
+	if err != nil {
+		t.Fatalf("Execute SELECT failed: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+
+	idIdx, nameIdx, activeIdx := -1, -1, -1
+	for i, c := range cols {
+		switch c {
+		case "id":
+			idIdx = i
+		case "name":
+			nameIdx = i
+		case "active":
+			activeIdx = i
+		}
+	}
+	if idIdx < 0 || nameIdx < 0 || activeIdx < 0 {
+		t.Fatalf("unexpected columns: %#v", cols)
+	}
+
+	row := rows[0]
+	if row[idIdx].Type != sql.TypeInt || row[idIdx].I64 != 1 {
+		t.Fatalf("expected id=1, got %+v", row[idIdx])
+	}
+	if row[nameIdx].Type != sql.TypeNull {
+		t.Fatalf("expected name=NULL/DEFAULT, got %+v", row[nameIdx])
+	}
+	if row[activeIdx].Type != sql.TypeNull {
+		t.Fatalf("expected active=NULL, got %+v", row[activeIdx])
+	}
+}

@@ -35,6 +35,10 @@ func filterRowsWhere(cols []string, rows []sql.Row, where *sql.WhereExpr) []sql.
 
 // valuesEqual compares two sql.Value for equality, considering their type.
 func valuesEqual(a, b sql.Value) bool {
+	// If either side is NULL, nothing is equal (even NULL = NULL is false for now).
+	if a.Type == sql.TypeNull || b.Type == sql.TypeNull {
+		return false
+	}
 	if a.Type != b.Type {
 		return false
 	}
@@ -88,12 +92,4 @@ func projectColumns(allCols []string, rows []sql.Row, requestedCols []string) ([
 	}
 
 	return outCols, outRows, nil
-}
-func indexOf(cols []string, target string) int {
-	for i, c := range cols {
-		if c == target {
-			return i
-		}
-	}
-	return -1
 }
