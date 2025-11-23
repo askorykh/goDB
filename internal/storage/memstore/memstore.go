@@ -31,6 +31,40 @@ type memTx struct {
 	readOnly bool
 }
 
+func (tx *memTx) ReplaceAll(tableName string, rows []sql.Row) error {
+	if tx.readOnly {
+		return fmt.Errorf("cannot replace in a read-only transaction")
+	}
+
+	tx.eng.mu.Lock()
+	defer tx.eng.mu.Unlock()
+
+	t, ok := tx.eng.tables[tableName]
+	if !ok {
+		return fmt.Errorf("table %s does not exist", tableName)
+	}
+
+	// basic type/length validation for safety
+	for _, r := range rows {
+		if len(r) != len(t.cols) {
+			return fmt.Errorf("column count mismatch in ReplaceAll: expected %d, got %d", len(t.cols), len(r))
+		}
+		for i, col := range t.cols {
+			if r[i].Type != col.Type {
+				return fmt.Errorf("type mismatch in ReplaceAll for column %q: expected %v, got %v",
+					col.Name, col.Type, r[i].Type)
+			}
+		}
+	}
+
+	// store a copy to avoid external modification
+	newRows := make([]sql.Row, len(rows))
+	copy(newRows, rows)
+
+	t.rows = newRows
+	return nil
+}
+
 func (tx *memTx) Scan(tableName string) (col []string, rows []sql.Row, err error) {
 	tx.eng.mu.RLock()
 	defer tx.eng.mu.RUnlock()

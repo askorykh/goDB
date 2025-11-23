@@ -41,3 +41,30 @@ type WhereExpr struct {
 	Op     string // currently only "=" is supported
 	Value  Value
 }
+
+// Assignment represents "column = value" in UPDATE.
+type Assignment struct {
+	Column string
+	Value  Value
+}
+
+// UpdateStmt represents:
+//
+//	UPDATE tableName SET col1 = val1, col2 = val2 WHERE column = literal;
+type UpdateStmt struct {
+	TableName   string
+	Assignments []Assignment
+	Where       *WhereExpr // must not be nil for now (we require WHERE)
+}
+
+func (*UpdateStmt) stmtNode() {}
+
+// DeleteStmt represents:
+//
+//	DELETE FROM tableName WHERE column = literal;
+type DeleteStmt struct {
+	TableName string
+	Where     *WhereExpr // may be nil if you later want full-table delete; for now we require it
+}
+
+func (*DeleteStmt) stmtNode() {}

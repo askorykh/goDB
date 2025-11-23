@@ -379,3 +379,175 @@ func TestEngineExecute_SelectColumnList(t *testing.T) {
 		t.Fatalf("expected 2 values in row, got %d", len(rows[0]))
 	}
 }
+func TestEngineExecute_UpdateWithWhere(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// CREATE TABLE users (id INT, name STRING, active BOOL);
+	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
+	createStmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(createStmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	// INSERT two rows
+	inserts := []string{
+		"INSERT INTO users VALUES (1, 'Alice', true);",
+		"INSERT INTO users VALUES (2, 'Bob', false);",
+	}
+	for _, q := range inserts {
+		stmt, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse INSERT failed for %q: %v", q, err)
+		}
+		if _, _, err := eng.Execute(stmt); err != nil {
+			t.Fatalf("Execute INSERT failed for %q: %v", q, err)
+		}
+	}
+
+	// UPDATE users SET active = false WHERE id = 1;
+	updateSQL := "UPDATE users SET active = false WHERE id = 1;"
+	updStmt, err := sql.Parse(updateSQL)
+	if err != nil {
+		t.Fatalf("Parse UPDATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(updStmt); err != nil {
+		t.Fatalf("Execute UPDATE failed: %v", err)
+	}
+
+	// SELECT * FROM users; and verify row1 changed, row2 unchanged
+	selectSQL := "SELECT * FROM users;"
+	selStmt, err := sql.Parse(selectSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+
+	cols, rows, err := eng.Execute(selStmt)
+	if err != nil {
+		t.Fatalf("Execute SELECT failed: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	// columns: id | name | active
+	idIdx, nameIdx, activeIdx := -1, -1, -1
+	for i, c := range cols {
+		switch c {
+		case "id":
+			idIdx = i
+		case "name":
+			nameIdx = i
+		case "active":
+			activeIdx = i
+		}
+	}
+	if idIdx == -1 || nameIdx == -1 || activeIdx == -1 {
+		t.Fatalf("unexpected columns: %#v", cols)
+	}
+
+	// Check row 1 (id=1) has active=false
+	var row1, row2 sql.Row
+	if rows[0][idIdx].I64 == 1 {
+		row1, row2 = rows[0], rows[1]
+	} else {
+		row1, row2 = rows[1], rows[0]
+	}
+
+	if row1[activeIdx].Type != sql.TypeBool || row1[activeIdx].B != false {
+		t.Fatalf("expected row with id=1 to have active=false, got: %+v", row1[activeIdx])
+	}
+
+	if row2[activeIdx].Type != sql.TypeBool || row2[activeIdx].B != false {
+		t.Fatalf("expected row with id=2 to keep active=false, got: %+v", row2[activeIdx])
+	}
+}
+func TestEngineExecute_DeleteWithWhere(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// CREATE TABLE
+	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
+	createStmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(createStmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	// INSERT three rows
+	inserts := []string{
+		"INSERT INTO users VALUES (1, 'Alice', true);",
+		"INSERT INTO users VALUES (2, 'Bob', false);",
+		"INSERT INTO users VALUES (3, 'Charlie', true);",
+	}
+	for _, q := range inserts {
+		stmt, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse INSERT failed for %q: %v", q, err)
+		}
+		if _, _, err := eng.Execute(stmt); err != nil {
+			t.Fatalf("Execute INSERT failed for %q: %v", q, err)
+		}
+	}
+
+	// DELETE FROM users WHERE id = 2;
+	deleteSQL := "DELETE FROM users WHERE id = 2;"
+	delStmt, err := sql.Parse(deleteSQL)
+	if err != nil {
+		t.Fatalf("Parse DELETE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(delStmt); err != nil {
+		t.Fatalf("Execute DELETE failed: %v", err)
+	}
+
+	// SELECT * and ensure only id=1 and id=3 remain
+	selectSQL := "SELECT * FROM users;"
+	selStmt, err := sql.Parse(selectSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+
+	cols, rows, err := eng.Execute(selStmt)
+	if err != nil {
+		t.Fatalf("Execute SELECT failed: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows after delete, got %d", len(rows))
+	}
+
+	// find id column index
+	idIdx := -1
+	for i, c := range cols {
+		if c == "id" {
+			idIdx = i
+			break
+		}
+	}
+	if idIdx == -1 {
+		t.Fatalf("id column not found in columns: %#v", cols)
+	}
+
+	ids := []int64{rows[0][idIdx].I64, rows[1][idIdx].I64}
+	want := map[int64]bool{1: true, 3: true}
+
+	for _, id := range ids {
+		if !want[id] {
+			t.Fatalf("unexpected id %d after delete, want only 1 and 3, got %v", id, ids)
+		}
+	}
+}

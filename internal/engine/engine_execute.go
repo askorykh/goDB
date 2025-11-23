@@ -41,6 +41,11 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 		// Otherwise project only requested columns.
 		projCols, projRows, err := projectColumns(fullCols, fullRows, s.Columns)
 		return projCols, projRows, err
+	case *sql.UpdateStmt:
+		return nil, nil, e.executeUpdate(s)
+
+	case *sql.DeleteStmt:
+		return nil, nil, e.executeDelete(s)
 
 	default:
 		return nil, nil, fmt.Errorf("unsupported statement type %T", stmt)

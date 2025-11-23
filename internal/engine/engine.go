@@ -90,3 +90,67 @@ func (e *DBEngine) SelectAll(tableName string) ([]string, []sql.Row, error) {
 
 	return cols, rows, nil
 }
+
+func (e *DBEngine) executeUpdate(stmt *sql.UpdateStmt) error {
+	if stmt.Where == nil {
+		return fmt.Errorf("UPDATE without WHERE is not supported yet")
+	}
+
+	tx, err := e.store.Begin(false)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	cols, rows, err := tx.Scan(stmt.TableName)
+	if err != nil {
+		_ = e.store.Rollback(tx)
+		return fmt.Errorf("scan: %w", err)
+	}
+
+	newRows, _, err := applyUpdate(cols, rows, stmt.Where, stmt.Assignments)
+	if err != nil {
+		_ = e.store.Rollback(tx)
+		return err
+	}
+
+	if err := tx.ReplaceAll(stmt.TableName, newRows); err != nil {
+		_ = e.store.Rollback(tx)
+		return fmt.Errorf("replaceAll: %w", err)
+	}
+
+	if err := e.store.Commit(tx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	return nil
+}
+
+func (e *DBEngine) executeDelete(stmt *sql.DeleteStmt) error {
+	if stmt.Where == nil {
+		return fmt.Errorf("DELETE without WHERE is not supported yet")
+	}
+
+	tx, err := e.store.Begin(false)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	cols, rows, err := tx.Scan(stmt.TableName)
+	if err != nil {
+		_ = e.store.Rollback(tx)
+		return fmt.Errorf("scan: %w", err)
+	}
+
+	newRows, _ := applyDelete(cols, rows, stmt.Where)
+
+	if err := tx.ReplaceAll(stmt.TableName, newRows); err != nil {
+		_ = e.store.Rollback(tx)
+		return fmt.Errorf("replaceAll: %w", err)
+	}
+
+	if err := e.store.Commit(tx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	return nil
+}

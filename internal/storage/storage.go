@@ -10,6 +10,10 @@ type Tx interface {
 	Insert(tableName string, row sql.Row) error
 
 	Scan(tableName string) (col []string, rows []sql.Row, err error)
+
+	// ReplaceAll replaces the entire rowset of a table.
+	// Used for simple UPDATE/DELETE implementations in the engine.
+	ReplaceAll(tableName string, rows []sql.Row) error
 }
 
 // Engine is a storage engine that can create and manage transactions.

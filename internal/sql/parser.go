@@ -36,7 +36,12 @@ func Parse(query string) (Statement, error) {
 		}
 	case "SELECT":
 		return parseSelect(q)
+	case "UPDATE":
+		return parseUpdate(q)
+	case "DELETE":
+		return parseDelete(q)
 	}
 
-	return nil, fmt.Errorf("unsupported statement (only CREATE TABLE is supported for now)")
+	return nil, fmt.Errorf("unsupported statement (supported: CREATE TABLE, INSERT INTO, SELECT, UPDATE, DELETE)")
+
 }

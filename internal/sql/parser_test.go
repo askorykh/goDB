@@ -269,3 +269,129 @@ func TestParseSelect_ColumnListWithWhere(t *testing.T) {
 		t.Fatalf("unexpected Columns: %#v", sel.Columns)
 	}
 }
+func TestParseUpdate_Basic(t *testing.T) {
+	query := "UPDATE users SET active = false WHERE id = 1;"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	upd, ok := stmt.(*UpdateStmt)
+	if !ok {
+		t.Fatalf("expected *UpdateStmt, got %T", stmt)
+	}
+
+	if upd.TableName != "users" {
+		t.Fatalf("expected table name %q, got %q", "users", upd.TableName)
+	}
+
+	if upd.Where == nil {
+		t.Fatalf("expected WHERE clause, got nil")
+	}
+	if upd.Where.Column != "id" || upd.Where.Op != "=" {
+		t.Fatalf("unexpected WHERE expr: %+v", upd.Where)
+	}
+	if upd.Where.Value.Type != TypeInt || upd.Where.Value.I64 != 1 {
+		t.Fatalf("unexpected WHERE value: %+v", upd.Where.Value)
+	}
+
+	if len(upd.Assignments) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(upd.Assignments))
+	}
+	assign := upd.Assignments[0]
+	if assign.Column != "active" {
+		t.Fatalf("expected assignment column %q, got %q", "active", assign.Column)
+	}
+	if assign.Value.Type != TypeBool || assign.Value.B != false {
+		t.Fatalf("unexpected assignment value: %+v", assign.Value)
+	}
+}
+
+func TestParseUpdate_MultiAssignmentWithSpaces(t *testing.T) {
+	query := "  update   users   set   name = 'Alice',  active = true   where   id = 42 ;"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	upd, ok := stmt.(*UpdateStmt)
+	if !ok {
+		t.Fatalf("expected *UpdateStmt, got %T", stmt)
+	}
+
+	if upd.TableName != "users" {
+		t.Fatalf("expected table name %q, got %q", "users", upd.TableName)
+	}
+
+	if upd.Where == nil {
+		t.Fatalf("expected WHERE clause, got nil")
+	}
+	if upd.Where.Column != "id" || upd.Where.Value.Type != TypeInt || upd.Where.Value.I64 != 42 {
+		t.Fatalf("unexpected WHERE: %+v", upd.Where)
+	}
+
+	if len(upd.Assignments) != 2 {
+		t.Fatalf("expected 2 assignments, got %d", len(upd.Assignments))
+	}
+
+	// we don't enforce order strongly, but likely: name, active
+	a0, a1 := upd.Assignments[0], upd.Assignments[1]
+
+	if a0.Column != "name" || a0.Value.Type != TypeString || a0.Value.S != "Alice" {
+		t.Fatalf("unexpected first assignment: %+v", a0)
+	}
+	if a1.Column != "active" || a1.Value.Type != TypeBool || a1.Value.B != true {
+		t.Fatalf("unexpected second assignment: %+v", a1)
+	}
+}
+func TestParseDelete_Basic(t *testing.T) {
+	query := "DELETE FROM users WHERE id = 1;"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	del, ok := stmt.(*DeleteStmt)
+	if !ok {
+		t.Fatalf("expected *DeleteStmt, got %T", stmt)
+	}
+
+	if del.TableName != "users" {
+		t.Fatalf("expected table name %q, got %q", "users", del.TableName)
+	}
+
+	if del.Where == nil {
+		t.Fatalf("expected WHERE clause, got nil")
+	}
+	if del.Where.Column != "id" || del.Where.Value.Type != TypeInt || del.Where.Value.I64 != 1 {
+		t.Fatalf("unexpected WHERE: %+v", del.Where)
+	}
+}
+
+func TestParseDelete_WithSpaces(t *testing.T) {
+	query := "  delete   from   Accounts   where   active = false ; "
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	del, ok := stmt.(*DeleteStmt)
+	if !ok {
+		t.Fatalf("expected *DeleteStmt, got %T", stmt)
+	}
+
+	if del.TableName != "Accounts" {
+		t.Fatalf("expected table name %q, got %q", "Accounts", del.TableName)
+	}
+
+	if del.Where == nil {
+		t.Fatalf("expected WHERE clause, got nil")
+	}
+	if del.Where.Column != "active" || del.Where.Value.Type != TypeBool || del.Where.Value.B != false {
+		t.Fatalf("unexpected WHERE: %+v", del.Where)
+	}
+}
