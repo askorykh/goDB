@@ -101,23 +101,46 @@ func (p pageBuf) insertRow(rowBytes []byte) (uint16, error) {
 	freeStart := p.freeStart()
 
 	rowLen := uint16(len(rowBytes))
-	// space needed = rowLen + 4 bytes for new slot
-	needed := int(rowLen) + 4
 
+	// Check if we have a deleted slot we can reuse.
+	var reuseSlot *uint16
+	for i := uint16(0); i < nSlots; i++ {
+		off, length := p.getSlot(i)
+		if off == 0xFFFF && length == 0 {
+			reuseSlot = &i
+			break
+		}
+	}
+
+	neededForRow := int(rowLen)
+	neededForNewSlot := 4 // each slot: offset uint16 + length uint16
+
+	// Compute how much space we need in total
+	needed := neededForRow
+	if reuseSlot == nil {
+		needed += neededForNewSlot
+	}
+
+	// Current free end = start of slot directory
 	freeEnd := PageSize - int(nSlots)*4
+
 	if int(freeStart)+needed > freeEnd {
 		return 0, fmt.Errorf("page: not enough free space")
 	}
 
-	// copy row at freeStart
+	// Write row bytes at freeStart
 	copy(p[freeStart:int(freeStart)+len(rowBytes)], rowBytes)
 
-	// new slot index
-	slotIdx := nSlots
-	p.setSlot(slotIdx, freeStart, rowLen)
+	var slotIdx uint16
+	if reuseSlot != nil {
+		slotIdx = *reuseSlot
+	} else {
+		slotIdx = nSlots
+		p.setNumSlots(nSlots + 1)
+	}
 
-	// update header
-	p.setNumSlots(nSlots + 1)
+	// Point slot to row
+	p.setSlot(slotIdx, freeStart, rowLen)
 	p.setFreeStart(freeStart + rowLen)
 
 	return slotIdx, nil
@@ -148,4 +171,9 @@ func (p pageBuf) iterateRows(numCols int, fn func(slot uint16, row sql.Row) erro
 		}
 	}
 	return nil
+}
+
+func (p pageBuf) deleteSlot(i uint16) {
+	// Mark as deleted. We use 0xFFFF/0 as the “tombstone” value.
+	p.setSlot(i, 0xFFFF, 0)
 }

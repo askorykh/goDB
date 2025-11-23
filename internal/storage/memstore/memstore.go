@@ -60,6 +60,61 @@ type memTx struct {
 	tables   map[string]*table
 }
 
+func (tx *memTx) DeleteWhere(tableName string, pred storage.RowPredicate) error {
+	if tx.readOnly {
+		return fmt.Errorf("memstore: cannot delete in read-only transaction")
+	}
+
+	tbl, ok := tx.tables[tableName]
+	if !ok {
+		return fmt.Errorf("memstore: table %q does not exist", tableName)
+	}
+
+	var newRows []sql.Row
+	for _, row := range tbl.rows {
+		match, err := pred(row)
+		if err != nil {
+			return err
+		}
+		if !match {
+			newRows = append(newRows, row)
+		}
+	}
+
+	tbl.rows = newRows
+	return nil
+}
+
+func (tx *memTx) UpdateWhere(tableName string, pred storage.RowPredicate, updater storage.RowUpdater) error {
+	if tx.readOnly {
+		return fmt.Errorf("memstore: cannot update in read-only transaction")
+	}
+
+	tbl, ok := tx.tables[tableName]
+	if !ok {
+		return fmt.Errorf("memstore: table %q does not exist", tableName)
+	}
+
+	for i, row := range tbl.rows {
+		match, err := pred(row)
+		if err != nil {
+			return err
+		}
+		if !match {
+			continue
+		}
+
+		newRow, err := updater(row)
+		if err != nil {
+			return err
+		}
+
+		tbl.rows[i] = newRow
+	}
+
+	return nil
+}
+
 func cloneTable(t *table) *table {
 	colsCopy := make([]sql.Column, len(t.cols))
 	copy(colsCopy, t.cols)

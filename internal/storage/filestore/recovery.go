@@ -15,12 +15,18 @@ type walOpType int
 const (
 	walOpInsert walOpType = iota
 	walOpReplaceAll
+	walOpDelete
+	walOpUpdate
 )
 
 type walOp struct {
 	typ   walOpType
 	table string
-	rows  []sql.Row
+	rows  []sql.Row // semantics depend on typ:
+	// Insert:      rows = [row1, row2, ...]
+	// ReplaceAll:  rows = full table snapshot
+	// Delete:      rows = [row1, row2, ...] to remove
+	// Update:      rows = [old1, new1, old2, new2, ...]
 }
 
 type walTxState struct {
@@ -36,16 +42,14 @@ func (e *FileEngine) recoverFromWAL() error {
 
 	info, err := os.Stat(walPath)
 	if err != nil {
-		// no WAL yet, nothing to do
 		if os.IsNotExist(err) {
-			return nil
+			return nil // no WAL, nothing to recover
 		}
 		return fmt.Errorf("recovery: stat WAL: %w", err)
 	}
 
-	// If WAL only has magic, nothing to replay.
 	if info.Size() <= int64(len(walMagic)) {
-		return nil
+		return nil // WAL only has magic, no records
 	}
 
 	// 1) Load schemas for all existing tables
@@ -63,7 +67,7 @@ func (e *FileEngine) recoverFromWAL() error {
 		schemas[t] = cols
 	}
 
-	// 2) Truncate data for all tables (keep header).
+	// 2) Truncate data for all tables (keep header)
 	for _, t := range tableNames {
 		path := e.tablePath(t)
 		f, err := os.OpenFile(path, os.O_RDWR, 0o644)
@@ -88,14 +92,14 @@ func (e *FileEngine) recoverFromWAL() error {
 		f.Close()
 	}
 
-	// 3) Parse WAL into tx states
+	// 3) Parse WAL into txStates
 	f, err := os.Open(walPath)
 	if err != nil {
 		return fmt.Errorf("recovery: open WAL: %w", err)
 	}
 	defer f.Close()
 
-	// Skip magic
+	// skip magic
 	if _, err := f.Seek(int64(len(walMagic)), io.SeekStart); err != nil {
 		return fmt.Errorf("recovery: seek WAL: %w", err)
 	}
@@ -129,12 +133,14 @@ func (e *FileEngine) recoverFromWAL() error {
 
 		switch recType {
 		case walRecBegin:
-			// nothing more in payload
+			// nothing extra
 		case walRecCommit:
 			txState.committed = true
 		case walRecRollback:
 			txState.rolled = true
-		case walRecInsert, walRecReplaceAll:
+
+		case walRecInsert, walRecReplaceAll, walRecDelete, walRecUpdate:
+			// common header: table name + rowCount
 			var nameLen uint16
 			if err := binary.Read(f, binary.LittleEndian, &nameLen); err != nil {
 				return fmt.Errorf("recovery: read table name len: %w", err)
@@ -152,13 +158,7 @@ func (e *FileEngine) recoverFromWAL() error {
 
 			cols, ok := schemas[table]
 			if !ok {
-				// table doesn't exist anymore; skip rows
-				for i := uint32(0); i < rowCount; i++ {
-					// read and discard
-					_, _ = readRow(f, 0) // but readRow needs numCols; so instead:
-					return fmt.Errorf("recovery: table %q in WAL but not in schema", table)
-				}
-				continue
+				return fmt.Errorf("recovery: table %q in WAL but not in schema map", table)
 			}
 
 			rows := make([]sql.Row, 0, rowCount)
@@ -170,10 +170,18 @@ func (e *FileEngine) recoverFromWAL() error {
 				rows = append(rows, r)
 			}
 
-			opType := walOpInsert
-			if recType == walRecReplaceAll {
+			var opType walOpType
+			switch recType {
+			case walRecInsert:
+				opType = walOpInsert
+			case walRecReplaceAll:
 				opType = walOpReplaceAll
+			case walRecDelete:
+				opType = walOpDelete
+			case walRecUpdate:
+				opType = walOpUpdate
 			}
+
 			txState.ops = append(txState.ops, walOp{
 				typ:   opType,
 				table: table,
@@ -185,35 +193,72 @@ func (e *FileEngine) recoverFromWAL() error {
 		}
 	}
 
-	// 4) Apply committed txs in log order
-	// (ignore rolled back or incomplete txs)
+	// 4) Replay committed txs into an in-memory view of each table
+	rowsByTable := make(map[string][]sql.Row)
+
 	for _, txID := range txOrder {
 		s := txStates[txID]
 		if !s.committed || s.rolled {
 			continue
 		}
 
-		// IMPORTANT: use a synthetic transaction so ReplaceAll/Insert follow page rules
+		for _, op := range s.ops {
+			switch op.typ {
+			case walOpInsert:
+				// Append rows
+				rowsByTable[op.table] = append(rowsByTable[op.table], op.rows...)
+
+			case walOpReplaceAll:
+				// Replace full contents
+				copied := make([]sql.Row, len(op.rows))
+				copy(copied, op.rows)
+				rowsByTable[op.table] = copied
+
+			case walOpDelete:
+				// Remove matching rows (first match per entry)
+				cur := rowsByTable[op.table]
+				for _, delRow := range op.rows {
+					for i := 0; i < len(cur); i++ {
+						if equalRow(cur[i], delRow) {
+							cur = append(cur[:i], cur[i+1:]...)
+							break
+						}
+					}
+				}
+				rowsByTable[op.table] = cur
+
+			case walOpUpdate:
+				// rows = [old1, new1, old2, new2, ...]
+				cur := rowsByTable[op.table]
+				if len(op.rows)%2 != 0 {
+					return fmt.Errorf("recovery: update op has odd rows length for table %q", op.table)
+				}
+				for i := 0; i < len(op.rows); i += 2 {
+					oldRow := op.rows[i]
+					newRow := op.rows[i+1]
+
+					for j := 0; j < len(cur); j++ {
+						if equalRow(cur[j], oldRow) {
+							cur[j] = newRow
+							break
+						}
+					}
+				}
+				rowsByTable[op.table] = cur
+			}
+		}
+	}
+
+	// 5) Write rebuilt contents back to disk via ReplaceAll (page-based)
+	for table, rows := range rowsByTable {
 		tx := &fileTx{
 			eng:      e,
 			readOnly: false,
 			closed:   false,
-			id:       0, // don’t log WAL during recovery
+			id:       0, // don't log recovery writes into WAL
 		}
-
-		for _, op := range s.ops {
-			switch op.typ {
-			case walOpInsert:
-				for _, r := range op.rows {
-					if err := tx.Insert(op.table, r); err != nil {
-						return fmt.Errorf("recovery: insert into %q: %w", op.table, err)
-					}
-				}
-			case walOpReplaceAll:
-				if err := tx.ReplaceAll(op.table, op.rows); err != nil {
-					return fmt.Errorf("recovery: replaceAll %q: %w", op.table, err)
-				}
-			}
+		if err := tx.ReplaceAll(table, rows); err != nil {
+			return fmt.Errorf("recovery: rebuild table %q: %w", table, err)
 		}
 	}
 
@@ -289,4 +334,37 @@ func (e *FileEngine) validateTx(tx storage.Tx) (*fileTx, error) {
 	}
 
 	return ft, nil
+}
+func equalRow(a, b sql.Row) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Type != b[i].Type {
+			return false
+		}
+		switch a[i].Type {
+		case sql.TypeInt:
+			if a[i].I64 != b[i].I64 {
+				return false
+			}
+		case sql.TypeFloat:
+			if a[i].F64 != b[i].F64 {
+				return false
+			}
+		case sql.TypeString:
+			if a[i].S != b[i].S {
+				return false
+			}
+		case sql.TypeBool:
+			if a[i].B != b[i].B {
+				return false
+			}
+		case sql.TypeNull:
+			// all nulls equal
+		default:
+			return false
+		}
+	}
+	return true
 }
