@@ -10,44 +10,56 @@ import (
 	"sync"
 )
 
-const (
-	walMagic = "GODBWAL1" // 8 bytes
+// WAL file format (version 2):
+//
+//   magic: "GODBWAL2" (8 bytes)
+//
+//   then a sequence of records:
+//     recType: uint8
+//     txID:    uint64
+//     ... type-specific payload ...
+//
+//   Types:
+//     BEGIN:      recType = 1, payload: none
+//     COMMIT:     recType = 2, payload: none
+//     ROLLBACK:   recType = 3, payload: none
+//     INSERT:     recType = 4, payload:
+//                  tableNameLen: uint16
+//                  tableName:    bytes
+//                  rowCount:     uint32 (must be 1 for INSERT)
+//                  row data:     encoded row (see writeRow)
+//     REPLACEALL: recType = 5, payload:
+//                  tableNameLen: uint16
+//                  tableName:    bytes
+//                  rowCount:     uint32
+//                  row data:     repeated rowCount times
 
-	walRecInsert     = 1
-	walRecReplaceAll = 2
+const (
+	walMagic = "GODBWAL2" // 8 bytes
+
+	walRecBegin      uint8 = 1
+	walRecCommit     uint8 = 2
+	walRecRollback   uint8 = 3
+	walRecInsert     uint8 = 4
+	walRecReplaceAll uint8 = 5
 )
 
-// walLogger is a very simple write-ahead log:
-//
-// File layout:
-//
-//	[magic "GODBWAL1"]
-//	[records...]
-//
-// Each record:
-//
-//	recType:      uint8
-//	tableNameLen: uint16
-//	tableName:    tableNameLen bytes
-//	rowCount:     uint32
-//	row data:     repeated rowCount times (same encoding as table rows).
+// walLogger is a simple append-only WAL writer.
 type walLogger struct {
 	mu   sync.Mutex
 	f    *os.File
 	path string
 }
 
-// newWAL opens or creates WAL file in append mode and ensures magic header.
+// newWAL opens or creates WAL file and ensures correct magic header.
 func newWAL(dir string) (*walLogger, error) {
 	path := filepath.Join(dir, "wal.log")
 
-	// Open or create
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("wal: open: %w", err)
 	}
 
-	// Check if file is new/empty; if so, write magic.
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -55,12 +67,13 @@ func newWAL(dir string) (*walLogger, error) {
 	}
 
 	if info.Size() == 0 {
+		// new file -> write magic
 		if _, err := f.Write([]byte(walMagic)); err != nil {
 			f.Close()
 			return nil, fmt.Errorf("wal: write magic: %w", err)
 		}
 	} else {
-		// verify magic
+		// existing file -> verify magic
 		magicBuf := make([]byte, len(walMagic))
 		if _, err := f.ReadAt(magicBuf, 0); err != nil {
 			f.Close()
@@ -68,11 +81,11 @@ func newWAL(dir string) (*walLogger, error) {
 		}
 		if string(magicBuf) != walMagic {
 			f.Close()
-			return nil, fmt.Errorf("wal: invalid magic, not a GoDB WAL file")
+			return nil, fmt.Errorf("wal: invalid magic, not a GoDB WAL v2 file")
 		}
 	}
 
-	// Seek to end for append
+	// Seek to end for appends
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("wal: seek end: %w", err)
@@ -106,14 +119,48 @@ func (w *walLogger) Sync() error {
 	return w.f.Sync()
 }
 
-func (w *walLogger) appendInsert(table string, row sql.Row) error {
+// appendBegin writes a BEGIN record for txID.
+func (w *walLogger) appendBegin(txID uint64) error {
+	return w.appendNoPayload(walRecBegin, txID)
+}
+
+// appendCommit writes a COMMIT record for txID.
+func (w *walLogger) appendCommit(txID uint64) error {
+	return w.appendNoPayload(walRecCommit, txID)
+}
+
+// appendRollback writes a ROLLBACK record for txID.
+func (w *walLogger) appendRollback(txID uint64) error {
+	return w.appendNoPayload(walRecRollback, txID)
+}
+
+func (w *walLogger) appendNoPayload(recType uint8, txID uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.f == nil {
 		return fmt.Errorf("wal: closed")
 	}
 
-	if err := w.writeRecordHeader(walRecInsert, table, 1); err != nil {
+	// recType
+	if err := binary.Write(w.f, binary.LittleEndian, recType); err != nil {
+		return err
+	}
+	// txID
+	if err := binary.Write(w.f, binary.LittleEndian, txID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// appendInsert logs an INSERT record for txID.
+func (w *walLogger) appendInsert(txID uint64, table string, row sql.Row) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.f == nil {
+		return fmt.Errorf("wal: closed")
+	}
+
+	if err := w.writeRecordHeader(txID, walRecInsert, table, 1); err != nil {
 		return err
 	}
 	if err := writeRow(w.f, row); err != nil {
@@ -122,14 +169,15 @@ func (w *walLogger) appendInsert(table string, row sql.Row) error {
 	return nil
 }
 
-func (w *walLogger) appendReplaceAll(table string, rows []sql.Row) error {
+// appendReplaceAll logs a REPLACEALL record for txID.
+func (w *walLogger) appendReplaceAll(txID uint64, table string, rows []sql.Row) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.f == nil {
 		return fmt.Errorf("wal: closed")
 	}
 
-	if err := w.writeRecordHeader(walRecReplaceAll, table, len(rows)); err != nil {
+	if err := w.writeRecordHeader(txID, walRecReplaceAll, table, len(rows)); err != nil {
 		return err
 	}
 	for _, r := range rows {
@@ -140,12 +188,17 @@ func (w *walLogger) appendReplaceAll(table string, rows []sql.Row) error {
 	return nil
 }
 
-func (w *walLogger) writeRecordHeader(recType uint8, table string, rowCount int) error {
+func (w *walLogger) writeRecordHeader(txID uint64, recType uint8, table string, rowCount int) error {
 	if w.f == nil {
 		return fmt.Errorf("wal: closed")
 	}
 
+	// recType
 	if err := binary.Write(w.f, binary.LittleEndian, recType); err != nil {
+		return err
+	}
+	// txID
+	if err := binary.Write(w.f, binary.LittleEndian, txID); err != nil {
 		return err
 	}
 

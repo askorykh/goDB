@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const (
@@ -46,6 +47,10 @@ const (
 type FileEngine struct {
 	dir string
 	wal *walLogger
+
+	// tx ID generator (for write tx only)
+	mu       sync.Mutex
+	nextTxID uint64
 }
 
 // ListTables returns all *.godb files in the storage directory.
@@ -97,8 +102,9 @@ func New(dir string) (*FileEngine, error) {
 	}
 
 	return &FileEngine{
-		dir: dir,
-		wal: w,
+		dir:      dir,
+		wal:      w,
+		nextTxID: 1,
 	}, nil
 }
 
@@ -137,46 +143,61 @@ func (e *FileEngine) CreateTable(name string, cols []sql.Column) error {
 // NOTE: For now this does NOT support rollback-on-disk; it is mainly
 // used to group operations logically. Real WAL/rollback can be added later.
 func (e *FileEngine) Begin(readOnly bool) (storage.Tx, error) {
-	return &fileTx{
+	tx := &fileTx{
 		eng:      e,
 		readOnly: readOnly,
 		closed:   false,
-	}, nil
-}
+		id:       0,
+	}
 
-func (e *FileEngine) Commit(tx storage.Tx) error {
-	// flush WAL to disk before we consider commit successful
-	if e.wal != nil {
-		if err := e.wal.Sync(); err != nil {
-			return fmt.Errorf("filestore: WAL sync on commit: %w", err)
+	// Only write transactions get a txID and BEGIN record.
+	if !readOnly {
+		e.mu.Lock()
+		txID := e.nextTxID
+		e.nextTxID++
+		e.mu.Unlock()
+
+		tx.id = txID
+
+		if err := e.wal.appendBegin(txID); err != nil {
+			return nil, fmt.Errorf("filestore: WAL BEGIN: %w", err)
 		}
 	}
 
-	ft, ok := tx.(*fileTx)
-	if !ok {
-		return fmt.Errorf("filestore: commit: unexpected transaction type %T", tx)
-	}
-	if ft.closed {
-		return fmt.Errorf("filestore: commit: transaction already closed")
-	}
+	return tx, nil
+}
 
-	ft.closed = true
+func (e *FileEngine) Commit(tx storage.Tx) error {
+	ft, ok := tx.(*fileTx)
+	if ok {
+		// For write transactions, append COMMIT and sync WAL.
+		if !ft.readOnly && ft.id != 0 {
+			if err := e.wal.appendCommit(ft.id); err != nil {
+				return fmt.Errorf("filestore: WAL COMMIT: %w", err)
+			}
+			if err := e.wal.Sync(); err != nil {
+				return fmt.Errorf("filestore: WAL sync on commit: %w", err)
+			}
+		}
+		ft.closed = true
+	}
 	return nil
 }
 
 func (e *FileEngine) Rollback(tx storage.Tx) error {
-	// NOTE: real rollback is not supported yet.
-	// Engine-level SQL transactions will still behave correctly with memstore;
-	// for filestore, ROLLBACK won't undo disk writes. We'll document this.
 	ft, ok := tx.(*fileTx)
-	if !ok {
-		return fmt.Errorf("filestore: rollback: unexpected transaction type %T", tx)
+	if ok {
+		// Still no actual undo on disk, but we log ROLLBACK for future recovery logic.
+		if !ft.readOnly && ft.id != 0 {
+			if err := e.wal.appendRollback(ft.id); err != nil {
+				return fmt.Errorf("filestore: WAL ROLLBACK: %w", err)
+			}
+			if err := e.wal.Sync(); err != nil {
+				return fmt.Errorf("filestore: WAL sync on rollback: %w", err)
+			}
+		}
+		ft.closed = true
 	}
-	if ft.closed {
-		return fmt.Errorf("filestore: rollback: transaction already closed")
-	}
-
-	ft.closed = true
 	return nil
 }
 
@@ -185,6 +206,7 @@ type fileTx struct {
 	eng      *FileEngine
 	readOnly bool
 	closed   bool
+	id       uint64 // 0 = no WAL tracking (read-only or not started)
 }
 
 // Insert appends a row to the table file.
@@ -197,8 +219,10 @@ func (tx *fileTx) Insert(tableName string, row sql.Row) error {
 	}
 
 	// 1) WAL: log the insert first
-	if err := tx.eng.wal.appendInsert(tableName, row); err != nil {
-		return fmt.Errorf("filestore: WAL appendInsert: %w", err)
+	if !tx.readOnly && tx.id != 0 {
+		if err := tx.eng.wal.appendInsert(tx.id, tableName, row); err != nil {
+			return fmt.Errorf("filestore: WAL appendInsert: %w", err)
+		}
 	}
 
 	// 2) Then write to table file
@@ -278,8 +302,10 @@ func (tx *fileTx) ReplaceAll(tableName string, rows []sql.Row) error {
 	}
 
 	//  WAL: log replaceAll
-	if err := tx.eng.wal.appendReplaceAll(tableName, rows); err != nil {
-		return fmt.Errorf("filestore: WAL appendReplaceAll: %w", err)
+	if !tx.readOnly && tx.id != 0 {
+		if err := tx.eng.wal.appendReplaceAll(tx.id, tableName, rows); err != nil {
+			return fmt.Errorf("filestore: WAL appendReplaceAll: %w", err)
+		}
 	}
 
 	path := tx.eng.tablePath(tableName)
