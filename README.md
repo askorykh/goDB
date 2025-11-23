@@ -41,23 +41,6 @@ INSERT INTO users VALUES (1, 'Alice', true);
 SELECT * FROM users;
 ```
 
-### REPL demo
-
-The REPL session is recorded with [asciinema](https://asciinema.org/). To watch it locally:
-
-```bash
-asciinema play docs/repl-demo.cast
-```
-
-To render a shareable GIF (output ignored by git) using [`agg`](https://github.com/asciinema/agg):
-
-```bash
-# record a fresh cast (requires asciinema)
-tools/replgif/record_cast.sh
-
-# render the GIF from the cast (requires agg); output goes to docs/repl-demo.gif
-tools/replgif/render_gif.sh
-```
 
 ## Running tests
 
