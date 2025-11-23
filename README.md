@@ -63,11 +63,11 @@ internal/
 ## Architecture
 
 ```mermaid
-graph TD
-  REPL[REPL (cmd/godb-server)] --> Parser[SQL parser]
-  Parser --> Engine[Execution engine]
-  Engine --> Storage[Storage interface]
-  Storage --> Memstore[In-memory store]
+graph TD;
+  REPL --> Parser[SQL parser];
+  Parser --> Engine[Execution engine];
+  Engine --> Storage[Storage interface];
+  Storage --> Memstore[In-memory store];
 ```
 
 - `cmd/godb-server` reads input, handles meta commands, and forwards SQL to the engine.
