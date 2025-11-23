@@ -27,9 +27,9 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 		var err error
 
 		if e.inTx {
-			fullCols, fullRows, err = e.selectAllInTx(e.currTx, s.TableName)
+			fullCols, fullRows, err = e.executeSelectInTx(e.currTx, s.TableName)
 		} else {
-			fullCols, fullRows, err = e.SelectAll(s.TableName) // existing auto-commit helper
+			fullCols, fullRows, err = e.executeSelect(s.TableName) // existing auto-commit helper
 		}
 		if err != nil {
 			return nil, nil, err

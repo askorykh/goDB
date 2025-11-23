@@ -47,10 +47,10 @@ func TestEngineCreateInsertSelectAll(t *testing.T) {
 		t.Fatalf("InsertRow row2 failed: %v", err)
 	}
 
-	// 4. SelectAll and assert results.
-	cols, rows, err := eng.SelectAll("users")
+	// 4. executeSelect and assert results.
+	cols, rows, err := eng.executeSelect("users")
 	if err != nil {
-		t.Fatalf("SelectAll failed: %v", err)
+		t.Fatalf("executeSelect failed: %v", err)
 	}
 
 	// Check columns
@@ -133,9 +133,9 @@ func TestEngineExecute_CreateTableAndUseIt(t *testing.T) {
 		t.Fatalf("InsertRow row2 failed: %v", err)
 	}
 
-	cols, rows, err := eng.SelectAll("users")
+	cols, rows, err := eng.executeSelect("users")
 	if err != nil {
-		t.Fatalf("SelectAll failed: %v", err)
+		t.Fatalf("executeSelect failed: %v", err)
 	}
 
 	expectedCols := []string{"id", "name", "active"}
@@ -185,9 +185,9 @@ func TestEngineExecute_InsertViaSQL(t *testing.T) {
 	}
 
 	// 3. SELECT via engine API
-	cols, rows, err := eng.SelectAll("users")
+	cols, rows, err := eng.executeSelect("users")
 	if err != nil {
-		t.Fatalf("SelectAll failed: %v", err)
+		t.Fatalf("executeSelect failed: %v", err)
 	}
 
 	expectedCols := []string{"id", "name", "active"}
@@ -236,7 +236,7 @@ func TestEngineExecute_SelectViaSQL(t *testing.T) {
 		}
 	}
 
-	// 3. SELECT via SQL using Execute (not SelectAll directly)
+	// 3. SELECT via SQL using Execute (not executeSelect directly)
 	selectSQL := "SELECT * FROM users;"
 	selectStmt, err := sql.Parse(selectSQL)
 	if err != nil {
@@ -649,9 +649,9 @@ func TestSelectAllReturnsCopy(t *testing.T) {
 		t.Fatalf("Execute INSERT failed: %v", err)
 	}
 
-	_, rows, err := eng.SelectAll("users")
+	_, rows, err := eng.executeSelect("users")
 	if err != nil {
-		t.Fatalf("SelectAll failed: %v", err)
+		t.Fatalf("executeSelect failed: %v", err)
 	}
 
 	// Mutate the returned copy; underlying storage should not change.
@@ -659,9 +659,9 @@ func TestSelectAllReturnsCopy(t *testing.T) {
 	rows[0][1].S = "Mutated"
 	rows[0][2].B = false
 
-	_, freshRows, err := eng.SelectAll("users")
+	_, freshRows, err := eng.executeSelect("users")
 	if err != nil {
-		t.Fatalf("SelectAll failed: %v", err)
+		t.Fatalf("executeSelect failed: %v", err)
 	}
 
 	if freshRows[0][0].I64 != 1 || freshRows[0][1].S != "Alice" || freshRows[0][2].B != true {
