@@ -76,13 +76,28 @@ func handleMetaCommand(line string) bool {
 		fmt.Println("Bye.")
 		return true
 	case ".help":
-		fmt.Println("Supported SQL (v0):")
-		fmt.Println("  CREATE TABLE name (col TYPE, ...);")
-		fmt.Println("  INSERT INTO name VALUES (...);")
-		fmt.Println("  SELECT * FROM name;")
+		fmt.Println("Supported SQL (current version):")
+		fmt.Println()
+		fmt.Println("  CREATE TABLE tableName (")
+		fmt.Println("      columnName TYPE, ...")
+		fmt.Println("  );")
+		fmt.Println("    - Supported types: INT, FLOAT, STRING, BOOL")
+		fmt.Println()
+		fmt.Println("  INSERT INTO tableName VALUES (value1, value2, ...);")
+		fmt.Println("    - Values must match table column order")
+		fmt.Println()
+		fmt.Println("  SELECT * FROM tableName;")
+		fmt.Println("  SELECT col1, col2, ... FROM tableName;")
+		fmt.Println("  SELECT col1, col2 FROM tableName WHERE column = literal;")
+		fmt.Println("    - WHERE: supports only equality (=)")
+		fmt.Println("    - WHERE literals: INT, FLOAT, STRING ('text'), BOOL")
+		fmt.Println()
 		fmt.Println("Meta commands:")
-		fmt.Println("  .exit, .quit  - quit the shell")
-		fmt.Println("  .help         - show this help")
+		fmt.Println("  .help   Show help")
+		fmt.Println("  .exit   Exit the REPL")
+		fmt.Println()
+		return false
+
 	default:
 		fmt.Printf("Unknown meta command: %s\n", line)
 	}

@@ -22,12 +22,15 @@ type InsertStmt struct {
 func (*InsertStmt) stmtNode() {}
 
 // SelectStmt represents a parsed SELECT statement.
-// For now we only support:
+// Supported forms (for now):
 //
-//	SELECT * FROM tableName;
+//	SELECT * FROM table;
+//	SELECT col1, col2 FROM table;
+//	... optionally with WHERE column = literal
 type SelectStmt struct {
 	TableName string
-	Where     *WhereExpr
+	Columns   []string   // nil or empty => SELECT *
+	Where     *WhereExpr // nil if no WHERE clause
 }
 
 func (*SelectStmt) stmtNode() {}

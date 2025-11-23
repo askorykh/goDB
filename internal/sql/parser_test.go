@@ -169,13 +169,6 @@ func TestParseSelect_CaseAndSpaces(t *testing.T) {
 	}
 }
 
-func TestParseSelect_OnlyStarSupported(t *testing.T) {
-	_, err := Parse("SELECT id, name FROM users;")
-	if err == nil {
-		t.Fatalf("expected error for non-* SELECT, got nil")
-	}
-}
-
 func TestParseSelect_WithWhereInt(t *testing.T) {
 	query := "SELECT * FROM users WHERE id = 1;"
 
@@ -227,5 +220,52 @@ func TestParseSelect_WithWhereString(t *testing.T) {
 	}
 	if sel.Where.Value.Type != TypeString || sel.Where.Value.S != "Alice Smith" {
 		t.Fatalf("unexpected WHERE value: %+v", sel.Where.Value)
+	}
+}
+func TestParseSelect_ColumnList(t *testing.T) {
+	query := "SELECT id, name FROM users;"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	sel, ok := stmt.(*SelectStmt)
+	if !ok {
+		t.Fatalf("expected *SelectStmt, got %T", stmt)
+	}
+
+	if sel.TableName != "users" {
+		t.Fatalf("expected table name %q, got %q", "users", sel.TableName)
+	}
+	if sel.Where != nil {
+		t.Fatalf("expected no WHERE, got %+v", sel.Where)
+	}
+	if len(sel.Columns) != 2 || sel.Columns[0] != "id" || sel.Columns[1] != "name" {
+		t.Fatalf("unexpected Columns: %#v", sel.Columns)
+	}
+}
+
+func TestParseSelect_ColumnListWithWhere(t *testing.T) {
+	query := "SELECT id, name FROM users WHERE active = true;"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	sel, ok := stmt.(*SelectStmt)
+	if !ok {
+		t.Fatalf("expected *SelectStmt, got %T", stmt)
+	}
+
+	if sel.TableName != "users" {
+		t.Fatalf("expected table name %q, got %q", "users", sel.TableName)
+	}
+	if sel.Where == nil {
+		t.Fatalf("expected WHERE clause, got nil")
+	}
+	if len(sel.Columns) != 2 || sel.Columns[0] != "id" || sel.Columns[1] != "name" {
+		t.Fatalf("unexpected Columns: %#v", sel.Columns)
 	}
 }

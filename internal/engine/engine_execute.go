@@ -22,17 +22,25 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 		return nil, nil, err
 
 	case *sql.SelectStmt:
-		cols, rows, err := e.SelectAll(s.TableName)
+		// Get full rowset from storage.
+		fullCols, fullRows, err := e.SelectAll(s.TableName)
 		if err != nil {
 			return nil, nil, err
 		}
 
-		// Apply WHERE filter if present.
+		// Apply WHERE filter first (uses full column set).
 		if s.Where != nil {
-			rows = filterRowsWhere(cols, rows, s.Where)
+			fullRows = filterRowsWhere(fullCols, fullRows, s.Where)
 		}
 
-		return cols, rows, nil
+		// If no column list -> return all columns.
+		if len(s.Columns) == 0 {
+			return fullCols, fullRows, nil
+		}
+
+		// Otherwise project only requested columns.
+		projCols, projRows, err := projectColumns(fullCols, fullRows, s.Columns)
+		return projCols, projRows, err
 
 	default:
 		return nil, nil, fmt.Errorf("unsupported statement type %T", stmt)

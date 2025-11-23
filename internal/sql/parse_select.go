@@ -5,45 +5,63 @@ import (
 	"strings"
 )
 
-// parseSelect parses a very simple SELECT statement.
-// Supported forms (case-insensitive, flexible spaces):
+// parseSelect parses a simple SELECT statement.
+//
+// Supported forms (case-insensitive, with flexible spaces):
 //
 //	SELECT * FROM users;
-//	SELECT * FROM users WHERE id = 1;
-//	SELECT * FROM users WHERE name = 'Alice';
+//	SELECT id, name FROM users;
+//	SELECT id, name FROM users WHERE active = true;
 func parseSelect(query string) (Statement, error) {
 	// query is trimmed and has no trailing semicolon here.
 
 	upper := strings.ToUpper(query)
-
-	// Ensure it starts with SELECT * (simplest possible)
-	tokens := strings.Fields(upper)
-	if len(tokens) < 4 {
-		return nil, fmt.Errorf("SELECT: incomplete statement")
-	}
-	if tokens[0] != "SELECT" {
+	if !strings.HasPrefix(strings.TrimSpace(upper), "SELECT") {
 		return nil, fmt.Errorf("SELECT: expected SELECT")
 	}
-	if tokens[1] != "*" {
-		return nil, fmt.Errorf("SELECT: only SELECT * is supported for now")
-	}
-	// We don't enforce tokens[2] == "FROM" here; we do it below using string search.
 
-	// Find FROM (case-insensitive) in the original string.
+	// Find FROM (case-insensitive).
 	idxFrom := strings.Index(upper, "FROM")
 	if idxFrom == -1 {
 		return nil, fmt.Errorf("SELECT: FROM not found")
 	}
 
-	beforeFrom := strings.TrimSpace(query[:idxFrom])
-	_ = beforeFrom // currently unused; we already validated "SELECT *"
+	// Part between SELECT and FROM: projection list (* or col list).
+	// Example: "SELECT *   " or "SELECT id, name  "
+	selectPart := strings.TrimSpace(query[len("SELECT"):idxFrom])
+	if selectPart == "" {
+		return nil, fmt.Errorf("SELECT: missing projection list")
+	}
 
+	var cols []string
+	if selectPart == "*" {
+		// nil or empty slice means "all columns"
+		cols = nil
+	} else {
+		// Split "id, name, active" -> ["id", "name", "active"]
+		colDefs := splitCommaSeparated(selectPart)
+		if len(colDefs) == 0 {
+			return nil, fmt.Errorf("SELECT: no valid column names")
+		}
+		cols = make([]string, 0, len(colDefs))
+		for _, c := range colDefs {
+			c = strings.TrimSpace(c)
+			if c == "" {
+				continue
+			}
+			cols = append(cols, c)
+		}
+		if len(cols) == 0 {
+			return nil, fmt.Errorf("SELECT: no valid column names")
+		}
+	}
+
+	// Everything after FROM: "users WHERE ..." or just "users"
 	afterFrom := strings.TrimSpace(query[idxFrom+len("FROM"):])
 	if afterFrom == "" {
 		return nil, fmt.Errorf("SELECT: missing table name")
 	}
 
-	// Check if there's a WHERE clause in the part after FROM.
 	upperAfter := strings.ToUpper(afterFrom)
 	idxWhere := strings.Index(upperAfter, "WHERE")
 
@@ -51,7 +69,7 @@ func parseSelect(query string) (Statement, error) {
 	var wherePart string
 
 	if idxWhere == -1 {
-		// No WHERE: the rest is just the table name.
+		// No WHERE: entire rest is table name
 		tableNameStr := strings.TrimSpace(afterFrom)
 		toks := strings.Fields(tableNameStr)
 		if len(toks) == 0 {
@@ -59,7 +77,7 @@ func parseSelect(query string) (Statement, error) {
 		}
 		tableName = toks[0]
 	} else {
-		// There is a WHERE: split table name and where clause.
+		// Split "table" and "where ..."
 		tableNameStr := strings.TrimSpace(afterFrom[:idxWhere])
 		toks := strings.Fields(tableNameStr)
 		if len(toks) == 0 {
@@ -84,6 +102,7 @@ func parseSelect(query string) (Statement, error) {
 
 	return &SelectStmt{
 		TableName: tableName,
+		Columns:   cols, // nil/empty => SELECT *
 		Where:     where,
 	}, nil
 }
