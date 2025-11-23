@@ -6,7 +6,9 @@ GoDB is a tiny educational database engine written in Go. It exists as a playgro
 
 ## Features
 
-- In-memory storage engine
+- Pluggable storage engines:
+  - In-memory store for quick experimentation
+  - Experimental on-disk filestore with a simple WAL (write-ahead log)
 - Simple SQL support:
   - `CREATE TABLE`
   - `INSERT INTO ... VALUES (...)`
@@ -17,6 +19,7 @@ GoDB is a tiny educational database engine written in Go. It exists as a playgro
   - `DELETE FROM table WHERE column = literal`
 - REPL-style shell to run SQL commands
 - Supported data types: `INT`, `FLOAT`, `STRING`, `BOOL`
+ - Basic transactions: `BEGIN`, `COMMIT`, `ROLLBACK`
 
 ## Requirements
 
@@ -29,7 +32,7 @@ GoDB is a tiny educational database engine written in Go. It exists as a playgro
 git clone https://github.com/askorykh/godb.git
 cd godb
 
-# Run the REPL server
+# Run the REPL server (creates ./data when using the filestore)
 go run ./cmd/godb-server
 ```
 
@@ -39,8 +42,21 @@ While in the REPL, try commands such as:
 CREATE TABLE users (id INT, name STRING, active BOOL);
 INSERT INTO users VALUES (1, 'Alice', true);
 SELECT * FROM users;
+BEGIN;
+INSERT INTO users VALUES (2, 'Bob', false);
+COMMIT;
 ```
 
+
+### Storage backends
+
+By default the REPL wires the engine to the on-disk filestore located in `./data`. It uses a straightforward file format and an append-only WAL for durability. Rollbacks are not yet implemented at the storage layer, so `ROLLBACK` only cancels the in-memory engine transaction when filestore is enabled—the on-disk table files are not reverted. See [`internal/storage/filestore/README.md`](internal/storage/filestore/README.md) for details.
+
+If you want a pure in-memory experience (no files written), switch to the `memstore` engine inside `cmd/godb-server/main.go` by swapping the initialization block.
+
+### Transactions
+
+The engine understands `BEGIN`, `COMMIT`, and `ROLLBACK` to group multiple statements. Transactions are executed against the configured storage backend. With the default filestore backend, commits fsync the WAL before returning, but rollbacks do not undo writes on disk yet.
 
 ## Running tests
 
