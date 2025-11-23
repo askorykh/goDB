@@ -1,6 +1,7 @@
 package filestore
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"goDB/internal/sql"
@@ -296,4 +297,13 @@ func readRowFromBytes(buf []byte, numCols int) (sql.Row, error) {
 	}
 
 	return row, nil
+}
+
+// encodeRowToBytes encodes a row into a byte slice using the same format as writeRow.
+func encodeRowToBytes(row sql.Row) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writeRow(&buf, row); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

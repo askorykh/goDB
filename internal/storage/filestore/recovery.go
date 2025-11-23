@@ -192,8 +192,28 @@ func (e *FileEngine) recoverFromWAL() error {
 		if !s.committed || s.rolled {
 			continue
 		}
-		if err := e.applyTxOps(s, schemas); err != nil {
-			return fmt.Errorf("recovery: apply tx %d: %w", txID, err)
+
+		// IMPORTANT: use a synthetic transaction so ReplaceAll/Insert follow page rules
+		tx := &fileTx{
+			eng:      e,
+			readOnly: false,
+			closed:   false,
+			id:       0, // don’t log WAL during recovery
+		}
+
+		for _, op := range s.ops {
+			switch op.typ {
+			case walOpInsert:
+				for _, r := range op.rows {
+					if err := tx.Insert(op.table, r); err != nil {
+						return fmt.Errorf("recovery: insert into %q: %w", op.table, err)
+					}
+				}
+			case walOpReplaceAll:
+				if err := tx.ReplaceAll(op.table, op.rows); err != nil {
+					return fmt.Errorf("recovery: replaceAll %q: %w", op.table, err)
+				}
+			}
 		}
 	}
 
