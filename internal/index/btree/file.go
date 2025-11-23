@@ -69,12 +69,7 @@ func (idx *fileIndex) Insert(key Key, rid RID) error {
 	keys = append(keys, key)
 	rids = append(rids, rid)
 
-	// Sort by key (stable so duplicates maintain insert order)
-	sort.SliceStable(keys, func(i, j int) bool {
-		return keys[i] < keys[j]
-	})
-	// But we must keep rids paired with keys. So better build a slice of pairs.
-	// Build entries before sort to keep keys and RIDs together.
+	// Build entries before sorting to keep keys and RIDs paired.
 	type entry struct {
 		k Key
 		r RID
@@ -83,6 +78,7 @@ func (idx *fileIndex) Insert(key Key, rid RID) error {
 	for i := range keys {
 		entries[i] = entry{k: keys[i], r: rids[i]}
 	}
+	// Sort by key (stable so duplicates maintain insert order)
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[i].k < entries[j].k
 	})
@@ -540,6 +536,7 @@ func (idx *fileIndex) insertIntoParent(leftID, rightID uint32, sepKey Key, path 
 
 	// Non-root: parent is the second-to-last pageID in path.
 	parentID := path[len(path)-2]
+	parentPath := path[:len(path)-1]
 	parentPage, err := idx.readPage(parentID)
 	if err != nil {
 		return err
@@ -566,10 +563,6 @@ func (idx *fileIndex) insertIntoParent(leftID, rightID uint32, sepKey Key, path 
 		return fmt.Errorf("btree: parent does not reference left child %d", leftID)
 	}
 
-	if hp.NumKeys >= uint32(maxInternalKeys) {
-		return fmt.Errorf("btree: internal node %d is full (internal splits not implemented yet)", parentID)
-	}
-
 	// Insert sepKey at keys[pos], and rightID at children[pos+1].
 	// children: len = n+1, keys: len = n
 	n := int(hp.NumKeys)
@@ -585,12 +578,49 @@ func (idx *fileIndex) insertIntoParent(leftID, rightID uint32, sepKey Key, path 
 	keys[pos] = sepKey
 
 	hp.NumKeys = uint32(n + 1)
-	if err := internalWriteAll(parentPage, hp, children, keys); err != nil {
+
+	if hp.NumKeys <= uint32(maxInternalKeys) {
+		if err := internalWriteAll(parentPage, hp, children, keys); err != nil {
+			return err
+		}
+		if err := idx.writePage(parentID, parentPage); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Split full internal node.
+	totalKeys := int(hp.NumKeys)
+	mid := totalKeys / 2
+	promote := keys[mid]
+
+	leftKeys := append([]Key(nil), keys[:mid]...)
+	leftChildren := append([]uint32(nil), children[:mid+1]...)
+
+	rightKeys := append([]Key(nil), keys[mid+1:]...)
+	rightChildren := append([]uint32(nil), children[mid+1:]...)
+
+	// Rewrite left (existing parent)
+	hp.NumKeys = uint32(len(leftKeys))
+	if err := internalWriteAll(parentPage, hp, leftChildren, leftKeys); err != nil {
 		return err
 	}
 	if err := idx.writePage(parentID, parentPage); err != nil {
 		return err
 	}
 
-	return nil
+	// Create right sibling
+	rightParentID, rightParentPage, err := idx.allocPage(PageTypeInternal)
+	if err != nil {
+		return err
+	}
+	rightHeader := PageHeader{PageType: PageTypeInternal, ParentPageID: 0, NumKeys: uint32(len(rightKeys))}
+	if err := internalWriteAll(rightParentPage, rightHeader, rightChildren, rightKeys); err != nil {
+		return err
+	}
+	if err := idx.writePage(rightParentID, rightParentPage); err != nil {
+		return err
+	}
+
+	return idx.insertIntoParent(parentID, rightParentID, promote, parentPath)
 }
