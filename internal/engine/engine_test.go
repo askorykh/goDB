@@ -971,3 +971,57 @@ func TestEngine_Select_OrderByLimitAndWhere(t *testing.T) {
 		t.Fatalf("unexpected ordering: got %v, want %v", got, want)
 	}
 }
+
+func TestEngine_Select_ErrorsOnUnknownWhereColumn(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	createSQL := "CREATE TABLE users (id INT, name STRING);"
+	stmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	selSQL := "SELECT * FROM users WHERE missing = 1;"
+	selStmt, err := sql.Parse(selSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+
+	if _, _, err := eng.Execute(selStmt); err == nil {
+		t.Fatalf("expected error for unknown WHERE column, got nil")
+	}
+}
+
+func TestEngine_Select_ErrorsOnUnknownOrderByColumn(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	createSQL := "CREATE TABLE users (id INT, name STRING);"
+	stmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	selSQL := "SELECT * FROM users ORDER BY missing;"
+	selStmt, err := sql.Parse(selSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+
+	if _, _, err := eng.Execute(selStmt); err == nil {
+		t.Fatalf("expected error for unknown ORDER BY column, got nil")
+	}
+}
