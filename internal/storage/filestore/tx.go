@@ -196,8 +196,9 @@ func (tx *fileTx) UpdateWhere(tableName string, pred storage.RowPredicate, updat
 				continue
 			}
 
-			// Apply updater
-			newRow, err := updater(oldRow)
+			// Apply updater on a copy so WAL retains the original values.
+			origRow := cloneRow(oldRow)
+			newRow, err := updater(cloneRow(oldRow))
 			if err != nil {
 				return err
 			}
@@ -210,7 +211,7 @@ func (tx *fileTx) UpdateWhere(tableName string, pred storage.RowPredicate, updat
 			if len(newBytes) <= int(length) {
 				// In-place update: log UPDATE, then overwrite.
 				if !tx.readOnly && tx.id != 0 {
-					if err := tx.eng.wal.appendUpdate(tx.id, tableName, oldRow, newRow); err != nil {
+					if err := tx.eng.wal.appendUpdate(tx.id, tableName, origRow, newRow); err != nil {
 						return fmt.Errorf("filestore: WAL appendUpdate: %w", err)
 					}
 				}
@@ -220,7 +221,7 @@ func (tx *fileTx) UpdateWhere(tableName string, pred storage.RowPredicate, updat
 			} else {
 				// New row is larger: log DELETE(old), delete slot, and reinsert via Insert (which logs INSERT).
 				if !tx.readOnly && tx.id != 0 {
-					if err := tx.eng.wal.appendDelete(tx.id, tableName, oldRow); err != nil {
+					if err := tx.eng.wal.appendDelete(tx.id, tableName, origRow); err != nil {
 						return fmt.Errorf("filestore: WAL appendDelete (update-grow): %w", err)
 					}
 				}
@@ -515,4 +516,12 @@ func (tx *fileTx) ReplaceAll(tableName string, rows []sql.Row) error {
 	}
 
 	return nil
+}
+
+// cloneRow returns a shallow copy of the row values so callers can mutate the
+// copy without affecting the original slice.
+func cloneRow(r sql.Row) sql.Row {
+	dup := make(sql.Row, len(r))
+	copy(dup, r)
+	return dup
 }
