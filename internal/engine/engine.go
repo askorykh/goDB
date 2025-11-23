@@ -187,6 +187,9 @@ func (e *DBEngine) executeDeleteInTx(tx storage.Tx, stmt *sql.DeleteStmt) error 
 	}
 
 	newRows, _, err := applyDelete(cols, rows, stmt.Where)
+	if err != nil {
+		return err
+	}
 	if err := tx.ReplaceAll(stmt.TableName, newRows); err != nil {
 		return fmt.Errorf("replaceAll: %w", err)
 	}
