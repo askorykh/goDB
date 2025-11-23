@@ -17,7 +17,7 @@ import (
 func main() {
 	fmt.Println("GoDB server starting (REPL mode)…")
 
-	/// choose storage implementation
+	// choose storage implementation
 	// mem := memstore.New()
 	// eng := engine.New(mem)
 
@@ -31,7 +31,7 @@ func main() {
 		log.Fatalf("engine start failed: %v", err)
 	}
 
-	fmt.Println("Engine started successfully (using in-memory storage).")
+	fmt.Println("Engine started successfully (using on-disk filestore at ./data).")
 	fmt.Println("Type SQL statements like:")
 	fmt.Println("  CREATE TABLE users (id INT, name STRING, active BOOL);")
 	fmt.Println("  INSERT INTO users VALUES (1, 'Alice', true);")

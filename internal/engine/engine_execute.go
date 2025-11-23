@@ -7,7 +7,12 @@ import (
 )
 
 // Execute takes a parsed SQL Statement and executes it using the engine.
-// For now it only supports CREATE TABLE statements.
+//
+// It always returns a column header slice and row data slice; for statements
+// that are not expected to yield rows (CREATE, INSERT, UPDATE, DELETE, and
+// transaction statements) both slices are empty and the caller can treat a
+// nil error as success. SELECT statements return the full projected columns
+// and rows, applying WHERE/ORDER BY/LIMIT in that order.
 func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 	if !e.started {
 		return nil, nil, fmt.Errorf("engine not started")
@@ -88,6 +93,9 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 	}
 }
 
+// sortRows orders the provided rows in place based on the ORDER BY clause.
+// It uses a stable sort so rows with equal keys preserve their original
+// relative order.
 func sortRows(cols []string, rows []sql.Row, ob *sql.OrderByClause) error {
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
