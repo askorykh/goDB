@@ -28,23 +28,18 @@ func TestEngineCreateInsertSelectAll(t *testing.T) {
 		t.Fatalf("CreateTable failed: %v", err)
 	}
 
-	// 3. Insert two rows via engine API.
-	row1 := sql.Row{
-		{Type: sql.TypeInt, I64: 1},
-		{Type: sql.TypeString, S: "Alice"},
-		{Type: sql.TypeBool, B: true},
-	}
-	row2 := sql.Row{
-		{Type: sql.TypeInt, I64: 2},
-		{Type: sql.TypeString, S: "Bob"},
-		{Type: sql.TypeBool, B: false},
-	}
-
-	if err := eng.InsertRow("users", row1); err != nil {
-		t.Fatalf("InsertRow row1 failed: %v", err)
-	}
-	if err := eng.InsertRow("users", row2); err != nil {
-		t.Fatalf("InsertRow row2 failed: %v", err)
+	// 3. Insert two rows via SQL execution.
+	for _, q := range []string{
+		"INSERT INTO users VALUES (1, 'Alice', true);",
+		"INSERT INTO users VALUES (2, 'Bob', false);",
+	} {
+		stmt, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse failed for %q: %v", q, err)
+		}
+		if _, _, err := eng.Execute(stmt); err != nil {
+			t.Fatalf("Execute failed for %q: %v", q, err)
+		}
 	}
 
 	// 4. executeSelect and assert results.
@@ -115,22 +110,17 @@ func TestEngineExecute_CreateTableAndUseIt(t *testing.T) {
 	}
 
 	// 4. Insert and select to prove the table is correctly created.
-	row1 := sql.Row{
-		{Type: sql.TypeInt, I64: 1},
-		{Type: sql.TypeString, S: "Alice"},
-		{Type: sql.TypeBool, B: true},
-	}
-	if err := eng.InsertRow("users", row1); err != nil {
-		t.Fatalf("InsertRow row1 failed: %v", err)
-	}
-
-	row2 := sql.Row{
-		{Type: sql.TypeInt, I64: 2},
-		{Type: sql.TypeString, S: "Bob"},
-		{Type: sql.TypeBool, B: false},
-	}
-	if err := eng.InsertRow("users", row2); err != nil {
-		t.Fatalf("InsertRow row2 failed: %v", err)
+	for _, q := range []string{
+		"INSERT INTO users VALUES (1, 'Alice', true);",
+		"INSERT INTO users VALUES (2, 'Bob', false);",
+	} {
+		stmt, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse failed for %q: %v", q, err)
+		}
+		if _, _, err := eng.Execute(stmt); err != nil {
+			t.Fatalf("Execute failed for %q: %v", q, err)
+		}
 	}
 
 	cols, rows, err := eng.executeSelect("users")

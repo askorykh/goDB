@@ -49,9 +49,7 @@ func Parse(query string) (Statement, error) {
 	case "ROLLBACK":
 		return parseRollback(q)
 	default:
-		return nil, fmt.Errorf("invalid SQL statement")
+		return nil, fmt.Errorf("unsupported statement (supported: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, BEGIN, COMMIT, ROLLBACK)")
 	}
-
-	return nil, fmt.Errorf("unsupported statement (supported: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, BEGIN, COMMIT, ROLLBACK)")
 
 }
