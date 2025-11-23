@@ -15,8 +15,7 @@ func applyUpdate(cols []string, rows []sql.Row, where *sql.WhereExpr, assigns []
 
 	whereIdx, ok := colIndex[where.Column]
 	if !ok {
-		// No rows can match; nothing to update.
-		return rows, 0, nil
+		return nil, 0, fmt.Errorf("UPDATE: unknown column %q in WHERE", where.Column)
 	}
 
 	// Precompute assignment indexes
@@ -57,7 +56,7 @@ func applyUpdate(cols []string, rows []sql.Row, where *sql.WhereExpr, assigns []
 
 // applyDelete returns a new rowset where all rows matching WHERE are removed.
 // It returns the new rows and the count of deleted rows.
-func applyDelete(cols []string, rows []sql.Row, where *sql.WhereExpr) ([]sql.Row, int) {
+func applyDelete(cols []string, rows []sql.Row, where *sql.WhereExpr) ([]sql.Row, int, error) {
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
 		colIndex[name] = i
@@ -65,8 +64,7 @@ func applyDelete(cols []string, rows []sql.Row, where *sql.WhereExpr) ([]sql.Row
 
 	whereIdx, ok := colIndex[where.Column]
 	if !ok {
-		// No rows match; nothing deleted.
-		return rows, 0
+		return nil, 0, fmt.Errorf("DELETE: unknown column %q in WHERE", where.Column)
 	}
 
 	var out []sql.Row
@@ -85,5 +83,5 @@ func applyDelete(cols []string, rows []sql.Row, where *sql.WhereExpr) ([]sql.Row
 		out = append(out, r)
 	}
 
-	return out, deleted
+	return out, deleted, nil
 }

@@ -57,9 +57,13 @@ func (tx *memTx) ReplaceAll(tableName string, rows []sql.Row) error {
 		}
 	}
 
-	// store a copy to avoid external modification
+	// store a deep copy to avoid external modification
 	newRows := make([]sql.Row, len(rows))
-	copy(newRows, rows)
+	for i, r := range rows {
+		rowCopy := make(sql.Row, len(r))
+		copy(rowCopy, r)
+		newRows[i] = rowCopy
+	}
 
 	t.rows = newRows
 	return nil
@@ -80,9 +84,15 @@ func (tx *memTx) Scan(tableName string) (col []string, rows []sql.Row, err error
 		colNames[i] = c.Name
 	}
 
-	// We return the slice directly for now.
-	// Later we might want to return a copy to avoid external modification.
-	return colNames, t.rows, nil
+	// Return a deep copy to prevent callers from mutating stored data.
+	rowsCopy := make([]sql.Row, len(t.rows))
+	for i, r := range t.rows {
+		rowCopy := make(sql.Row, len(r))
+		copy(rowCopy, r)
+		rowsCopy[i] = rowCopy
+	}
+
+	return colNames, rowsCopy, nil
 }
 
 // Begin starts a new transaction.

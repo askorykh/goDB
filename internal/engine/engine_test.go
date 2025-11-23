@@ -620,3 +620,123 @@ func TestEngine_InsertWithColumnList(t *testing.T) {
 		t.Fatalf("expected active=true, got %+v", row[activeIdx])
 	}
 }
+
+func TestSelectAllReturnsCopy(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
+	stmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	insertSQL := "INSERT INTO users VALUES (1, 'Alice', true);"
+	insStmt, err := sql.Parse(insertSQL)
+	if err != nil {
+		t.Fatalf("Parse INSERT failed: %v", err)
+	}
+	if _, _, err := eng.Execute(insStmt); err != nil {
+		t.Fatalf("Execute INSERT failed: %v", err)
+	}
+
+	_, rows, err := eng.SelectAll("users")
+	if err != nil {
+		t.Fatalf("SelectAll failed: %v", err)
+	}
+
+	// Mutate the returned copy; underlying storage should not change.
+	rows[0][0].I64 = 999
+	rows[0][1].S = "Mutated"
+	rows[0][2].B = false
+
+	_, freshRows, err := eng.SelectAll("users")
+	if err != nil {
+		t.Fatalf("SelectAll failed: %v", err)
+	}
+
+	if freshRows[0][0].I64 != 1 || freshRows[0][1].S != "Alice" || freshRows[0][2].B != true {
+		t.Fatalf("expected stored row to remain unchanged, got %+v", freshRows[0])
+	}
+}
+
+func TestExecuteUpdateUnknownWhereColumn(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	createSQL := "CREATE TABLE users (id INT, name STRING);"
+	stmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	insertSQL := "INSERT INTO users VALUES (1, 'Alice');"
+	insStmt, err := sql.Parse(insertSQL)
+	if err != nil {
+		t.Fatalf("Parse INSERT failed: %v", err)
+	}
+	if _, _, err := eng.Execute(insStmt); err != nil {
+		t.Fatalf("Execute INSERT failed: %v", err)
+	}
+
+	updateSQL := "UPDATE users SET name = 'Bob' WHERE missing = 1;"
+	updStmt, err := sql.Parse(updateSQL)
+	if err != nil {
+		t.Fatalf("Parse UPDATE failed: %v", err)
+	}
+
+	if _, _, err := eng.Execute(updStmt); err == nil {
+		t.Fatalf("expected error for unknown WHERE column, got nil")
+	}
+}
+
+func TestExecuteDeleteUnknownWhereColumn(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	createSQL := "CREATE TABLE users (id INT, name STRING);"
+	stmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(stmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	insertSQL := "INSERT INTO users VALUES (1, 'Alice');"
+	insStmt, err := sql.Parse(insertSQL)
+	if err != nil {
+		t.Fatalf("Parse INSERT failed: %v", err)
+	}
+	if _, _, err := eng.Execute(insStmt); err != nil {
+		t.Fatalf("Execute INSERT failed: %v", err)
+	}
+
+	deleteSQL := "DELETE FROM users WHERE missing = 1;"
+	delStmt, err := sql.Parse(deleteSQL)
+	if err != nil {
+		t.Fatalf("Parse DELETE failed: %v", err)
+	}
+
+	if _, _, err := eng.Execute(delStmt); err == nil {
+		t.Fatalf("expected error for unknown WHERE column, got nil")
+	}
+}

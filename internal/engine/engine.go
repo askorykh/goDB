@@ -141,7 +141,11 @@ func (e *DBEngine) executeDelete(stmt *sql.DeleteStmt) error {
 		return fmt.Errorf("scan: %w", err)
 	}
 
-	newRows, _ := applyDelete(cols, rows, stmt.Where)
+	newRows, _, err := applyDelete(cols, rows, stmt.Where)
+	if err != nil {
+		_ = e.store.Rollback(tx)
+		return err
+	}
 
 	if err := tx.ReplaceAll(stmt.TableName, newRows); err != nil {
 		_ = e.store.Rollback(tx)
