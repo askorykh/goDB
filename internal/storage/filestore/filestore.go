@@ -2,6 +2,7 @@ package filestore
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"goDB/internal/sql"
 	"goDB/internal/storage"
@@ -103,6 +104,8 @@ func (e *FileEngine) CreateTable(name string, cols []sql.Column) error {
 
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("filestore: table %q already exists", name)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("filestore: check existing table: %w", err)
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
@@ -112,6 +115,8 @@ func (e *FileEngine) CreateTable(name string, cols []sql.Column) error {
 	defer f.Close()
 
 	if err := writeHeader(f, cols); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
 		return fmt.Errorf("filestore: write header: %w", err)
 	}
 
@@ -130,12 +135,15 @@ func (e *FileEngine) Begin(readOnly bool) (storage.Tx, error) {
 }
 
 func (e *FileEngine) Commit(tx storage.Tx) error {
-	// our simple tx has no buffered state; writes happen immediately.
-	// we just mark it closed.
 	ft, ok := tx.(*fileTx)
-	if ok {
-		ft.closed = true
+	if !ok {
+		return fmt.Errorf("filestore: commit: unexpected transaction type %T", tx)
 	}
+	if ft.closed {
+		return fmt.Errorf("filestore: commit: transaction already closed")
+	}
+
+	ft.closed = true
 	return nil
 }
 
@@ -144,9 +152,14 @@ func (e *FileEngine) Rollback(tx storage.Tx) error {
 	// Engine-level SQL transactions will still behave correctly with memstore;
 	// for filestore, ROLLBACK won't undo disk writes. We'll document this.
 	ft, ok := tx.(*fileTx)
-	if ok {
-		ft.closed = true
+	if !ok {
+		return fmt.Errorf("filestore: rollback: unexpected transaction type %T", tx)
 	}
+	if ft.closed {
+		return fmt.Errorf("filestore: rollback: transaction already closed")
+	}
+
+	ft.closed = true
 	return nil
 }
 
@@ -282,6 +295,9 @@ func (tx *fileTx) ReplaceAll(tableName string, rows []sql.Row) error {
 
 // writeHeader writes the table schema to the beginning of the file.
 func writeHeader(w io.Writer, cols []sql.Column) error {
+	if len(cols) > 0xFFFF {
+		return fmt.Errorf("filestore: too many columns: %d", len(cols))
+	}
 	// magic
 	if _, err := w.Write([]byte(fileMagic)); err != nil {
 		return err
