@@ -260,3 +260,65 @@ func TestEngineExecute_SelectViaSQL(t *testing.T) {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
 }
+func TestEngineExecute_SelectWithWhere(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// CREATE TABLE via SQL
+	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
+	createStmt, err := sql.Parse(createSQL)
+	if err != nil {
+		t.Fatalf("Parse CREATE failed: %v", err)
+	}
+	if _, _, err := eng.Execute(createStmt); err != nil {
+		t.Fatalf("Execute CREATE failed: %v", err)
+	}
+
+	// INSERT rows via SQL
+	queries := []string{
+		"INSERT INTO users VALUES (1, 'Alice', true);",
+		"INSERT INTO users VALUES (2, 'Bob', false);",
+		"INSERT INTO users VALUES (3, 'Alice Smith', true);",
+	}
+	for _, q := range queries {
+		stmt, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse INSERT failed for %q: %v", q, err)
+		}
+		if _, _, err := eng.Execute(stmt); err != nil {
+			t.Fatalf("Execute INSERT failed for %q: %v", q, err)
+		}
+	}
+
+	// SELECT * FROM users WHERE active = true;
+	selectSQL := "SELECT * FROM users WHERE active = true;"
+	selectStmt, err := sql.Parse(selectSQL)
+	if err != nil {
+		t.Fatalf("Parse SELECT failed: %v", err)
+	}
+
+	cols, rows, err := eng.Execute(selectStmt)
+	if err != nil {
+		t.Fatalf("Execute SELECT failed: %v", err)
+	}
+
+	// Expect 2 rows: Alice and Alice Smith
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows with active = true, got %d", len(rows))
+	}
+
+	// Simple sanity: check column headers still correct
+	expectedCols := []string{"id", "name", "active"}
+	if len(cols) != len(expectedCols) {
+		t.Fatalf("expected %d columns, got %d", len(expectedCols), len(cols))
+	}
+	for i, want := range expectedCols {
+		if cols[i] != want {
+			t.Fatalf("column %d: expected %q, got %q", i, want, cols[i])
+		}
+	}
+}

@@ -27,6 +27,14 @@ func (*InsertStmt) stmtNode() {}
 //	SELECT * FROM tableName;
 type SelectStmt struct {
 	TableName string
+	Where     *WhereExpr
 }
 
 func (*SelectStmt) stmtNode() {}
+
+// WhereExpr represents a simple WHERE condition: column = literal.
+type WhereExpr struct {
+	Column string
+	Op     string // currently only "=" is supported
+	Value  Value
+}

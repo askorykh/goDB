@@ -175,3 +175,57 @@ func TestParseSelect_OnlyStarSupported(t *testing.T) {
 		t.Fatalf("expected error for non-* SELECT, got nil")
 	}
 }
+
+func TestParseSelect_WithWhereInt(t *testing.T) {
+	query := "SELECT * FROM users WHERE id = 1;"
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	sel, ok := stmt.(*SelectStmt)
+	if !ok {
+		t.Fatalf("expected *SelectStmt, got %T", stmt)
+	}
+
+	if sel.TableName != "users" {
+		t.Fatalf("expected table name %q, got %q", "users", sel.TableName)
+	}
+	if sel.Where == nil {
+		t.Fatalf("expected WHERE clause, got nil")
+	}
+	if sel.Where.Column != "id" || sel.Where.Op != "=" {
+		t.Fatalf("unexpected WHERE expr: %+v", sel.Where)
+	}
+	if sel.Where.Value.Type != TypeInt || sel.Where.Value.I64 != 1 {
+		t.Fatalf("unexpected WHERE value: %+v", sel.Where.Value)
+	}
+}
+
+func TestParseSelect_WithWhereString(t *testing.T) {
+	query := "  select * from  users  where  name = 'Alice Smith' ; "
+
+	stmt, err := Parse(query)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	sel, ok := stmt.(*SelectStmt)
+	if !ok {
+		t.Fatalf("expected *SelectStmt, got %T", stmt)
+	}
+
+	if sel.TableName != "users" {
+		t.Fatalf("expected table name %q, got %q", "users", sel.TableName)
+	}
+	if sel.Where == nil {
+		t.Fatalf("expected WHERE clause, got nil")
+	}
+	if sel.Where.Column != "name" || sel.Where.Op != "=" {
+		t.Fatalf("unexpected WHERE expr: %+v", sel.Where)
+	}
+	if sel.Where.Value.Type != TypeString || sel.Where.Value.S != "Alice Smith" {
+		t.Fatalf("unexpected WHERE value: %+v", sel.Where.Value)
+	}
+}

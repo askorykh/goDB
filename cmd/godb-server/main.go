@@ -1,82 +1,123 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+
 	"goDB/internal/engine"
 	"goDB/internal/sql"
 	"goDB/internal/storage/memstore"
+	"os"
 	"strings"
 )
 
 func main() {
-	fmt.Println("GoDB server starting (v0)…")
+	fmt.Println("GoDB server starting (REPL mode)…")
 
 	// Create the in-memory storage engine.
 	store := memstore.New()
 
-	// Create the database engine
+	// Create the DB engine on top of this storage.
 	eng := engine.New(store)
 
-	// Start the engine
+	// Start the engine.
 	if err := eng.Start(); err != nil {
 		fmt.Println("ERROR:", err)
 		return
 	}
 
 	fmt.Println("Engine started successfully (using in-memory storage).")
+	fmt.Println("Type SQL statements like:")
+	fmt.Println("  CREATE TABLE users (id INT, name STRING, active BOOL);")
+	fmt.Println("  INSERT INTO users VALUES (1, 'Alice', true);")
+	fmt.Println("  SELECT * FROM users;")
+	fmt.Println("Meta commands:")
+	fmt.Println("  .exit   - quit")
+	fmt.Println("  .help   - show this help")
+	fmt.Println()
 
-	// Define a simple "users" table with 3 columns.
-	if err := eng.CreateTable("users", []sql.Column{
-		{Name: "id", Type: sql.TypeInt},
-		{Name: "name", Type: sql.TypeString},
-		{Name: "active", Type: sql.TypeBool},
-	}); err != nil {
-		fmt.Println("CreateTable ERROR:", err)
-		return
+	runREPL(eng)
+}
+
+func runREPL(eng *engine.DBEngine) {
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for {
+		fmt.Print("godb> ")
+
+		if !scanner.Scan() {
+			// EOF (Ctrl+D) or input error
+			fmt.Println("\nExiting.")
+			return
+		}
+
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		// Meta commands start with a dot, like SQLite.
+		if strings.HasPrefix(line, ".") {
+			if handleMetaCommand(line) {
+				return
+			}
+			continue
+		}
+
+		handleSQL(line, eng)
 	}
-	fmt.Println("Table 'users' created.")
+}
 
-	// Create a row: (1, "Alice", true)
-	row1 := sql.Row{
-		{Type: sql.TypeInt, I64: 1},
-		{Type: sql.TypeString, S: "Alice"},
-		{Type: sql.TypeBool, B: true},
+// handleMetaCommand processes commands like .exit, .help.
+// Returns true if the REPL should exit.
+func handleMetaCommand(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case ".exit", ".quit":
+		fmt.Println("Bye.")
+		return true
+	case ".help":
+		fmt.Println("Supported SQL (v0):")
+		fmt.Println("  CREATE TABLE name (col TYPE, ...);")
+		fmt.Println("  INSERT INTO name VALUES (...);")
+		fmt.Println("  SELECT * FROM name;")
+		fmt.Println("Meta commands:")
+		fmt.Println("  .exit, .quit  - quit the shell")
+		fmt.Println("  .help         - show this help")
+	default:
+		fmt.Printf("Unknown meta command: %s\n", line)
 	}
+	return false
+}
 
-	// Insert the row.
-	if err := eng.InsertRow("users", row1); err != nil {
-		fmt.Println("InsertRow ERROR:", err)
-		return
-	}
-	fmt.Println("Inserted row 1 into 'users'.")
-
-	// Create another row: (2, "Bob", false)
-	row2 := sql.Row{
-		{Type: sql.TypeInt, I64: 2},
-		{Type: sql.TypeString, S: "Bob"},
-		{Type: sql.TypeBool, B: false},
-	}
-
-	if err := eng.InsertRow("users", row2); err != nil {
-		fmt.Println("InsertRow ERROR:", err)
-		return
-	}
-	fmt.Println("Inserted row 2 into 'users'.")
-
-	// --- SELECT * FROM users (using SelectAll) ---
-
-	fmt.Println("\nSelecting all from 'users':")
-
-	cols, rows, err := eng.SelectAll("users")
+func handleSQL(line string, eng *engine.DBEngine) {
+	// Allow multi-line-ish usage by adding missing semicolon mentally, but for now
+	// we just pass the line as is; parser already handles optional trailing ';'.
+	stmt, err := sql.Parse(line)
 	if err != nil {
-		fmt.Println("SelectAll ERROR:", err)
+		fmt.Println("Parse error:", err)
 		return
 	}
 
-	// Print header
+	cols, rows, err := eng.Execute(stmt)
+	if err != nil {
+		fmt.Println("Execution error:", err)
+		return
+	}
+
+	// If we got columns back, assume it's a SELECT and print a table.
+	if len(cols) > 0 {
+		printResultSet(cols, rows)
+	} else {
+		// For CREATE/INSERT we just say OK for now.
+		fmt.Println("OK")
+	}
+}
+
+func printResultSet(cols []string, rows []sql.Row) {
+	// Header
 	fmt.Println(strings.Join(cols, " | "))
 
-	// Print each row
+	// Rows
 	for _, row := range rows {
 		var parts []string
 		for _, v := range row {
@@ -84,7 +125,6 @@ func main() {
 		}
 		fmt.Println(strings.Join(parts, " | "))
 	}
-
 }
 
 // formatValue converts a sql.Value to a human-readable string.
