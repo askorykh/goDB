@@ -39,3 +39,4 @@ go.work.sum
 
 # Generated demo assets
 docs/repl-demo.gif
+/data/

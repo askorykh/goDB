@@ -216,7 +216,7 @@ func parseWhereClause(s string) (*WhereExpr, error) {
 	ops := []string{">=", "<=", "!=", "=", ">", "<"}
 
 	var op string
-	var idx int = -1
+	var idx = -1
 
 	for _, candidate := range ops {
 		i := strings.Index(upper, candidate)

@@ -4,11 +4,12 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"goDB/internal/storage/filestore"
 	"io"
+	"log"
 
 	"goDB/internal/engine"
 	"goDB/internal/sql"
-	"goDB/internal/storage/memstore"
 	"os"
 	"strings"
 )
@@ -16,16 +17,18 @@ import (
 func main() {
 	fmt.Println("GoDB server starting (REPL mode)…")
 
-	// Create the in-memory storage engine.
-	store := memstore.New()
+	/// choose storage implementation
+	// mem := memstore.New()
+	// eng := engine.New(mem)
 
-	// Create the DB engine on top of this storage.
-	eng := engine.New(store)
+	fs, err := filestore.New("./data")
+	if err != nil {
+		log.Fatalf("failed to init filestore: %v", err)
+	}
+	eng := engine.New(fs)
 
-	// Start the engine.
 	if err := eng.Start(); err != nil {
-		fmt.Println("ERROR:", err)
-		return
+		log.Fatalf("engine start failed: %v", err)
 	}
 
 	fmt.Println("Engine started successfully (using in-memory storage).")
