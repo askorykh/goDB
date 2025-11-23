@@ -1025,3 +1025,54 @@ func TestEngine_Select_ErrorsOnUnknownOrderByColumn(t *testing.T) {
 		t.Fatalf("expected error for unknown ORDER BY column, got nil")
 	}
 }
+
+func TestEngineExecute_SelectCaseInsensitiveColumns(t *testing.T) {
+	store := memstore.New()
+	eng := New(store)
+
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Create table and insert a couple of rows.
+	for _, q := range []string{
+		"CREATE TABLE users (id INT, name STRING, active BOOL);",
+		"INSERT INTO users VALUES (1, 'Alice', true);",
+		"INSERT INTO users VALUES (2, 'Bob', false);",
+	} {
+		stmt, err := sql.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse failed for %q: %v", q, err)
+		}
+		if _, _, err := eng.Execute(stmt); err != nil {
+			t.Fatalf("Execute failed for %q: %v", q, err)
+		}
+	}
+
+	// Use uppercase column names in SELECT, WHERE, and ORDER BY.
+	stmt, err := sql.Parse("SELECT ID, NAME FROM users WHERE ACTIVE = true ORDER BY ID DESC;")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	cols, rows, err := eng.Execute(stmt)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if got, want := cols, []string{"ID", "NAME"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected columns: got %v, want %v", got, want)
+	}
+
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row after WHERE filter, got %d", len(rows))
+	}
+
+	row := rows[0]
+	if row[0].Type != sql.TypeInt || row[0].I64 != 1 {
+		t.Fatalf("ID mismatch: %+v", row[0])
+	}
+	if row[1].Type != sql.TypeString || row[1].S != "Alice" {
+		t.Fatalf("NAME mismatch: %+v", row[1])
+	}
+}

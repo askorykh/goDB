@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"goDB/internal/sql"
 	"sort"
+	"strings"
 )
 
 // Execute takes a parsed SQL Statement and executes it using the engine.
@@ -99,9 +100,9 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 func sortRows(cols []string, rows []sql.Row, ob *sql.OrderByClause) error {
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
-		colIndex[name] = i
+		colIndex[strings.ToLower(name)] = i
 	}
-	idx, ok := colIndex[ob.Column]
+	idx, ok := colIndex[strings.ToLower(ob.Column)]
 	if !ok {
 		return fmt.Errorf("unknown column %q in ORDER BY", ob.Column)
 	}

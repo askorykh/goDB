@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"goDB/internal/sql"
+	"strings"
 )
 
 // applyUpdate returns a new rowset where all rows matching WHERE are updated
@@ -12,17 +13,17 @@ import (
 func applyUpdate(cols []string, rows []sql.Row, where *sql.WhereExpr, assigns []sql.Assignment) ([]sql.Row, int, error) {
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
-		colIndex[name] = i
+		colIndex[strings.ToLower(name)] = i
 	}
 
-	whereIdx, ok := colIndex[where.Column]
+	whereIdx, ok := colIndex[strings.ToLower(where.Column)]
 	if !ok {
 		return nil, 0, fmt.Errorf("UPDATE: unknown column %q in WHERE", where.Column)
 	}
 
 	assignIdx := make([]int, len(assigns))
 	for i, a := range assigns {
-		idx, ok := colIndex[a.Column]
+		idx, ok := colIndex[strings.ToLower(a.Column)]
 		if !ok {
 			return nil, 0, fmt.Errorf("UPDATE: unknown column %q in SET list", a.Column)
 		}
@@ -55,10 +56,10 @@ func applyUpdate(cols []string, rows []sql.Row, where *sql.WhereExpr, assigns []
 func applyDelete(cols []string, rows []sql.Row, where *sql.WhereExpr) ([]sql.Row, int, error) {
 	colIndex := make(map[string]int, len(cols))
 	for i, name := range cols {
-		colIndex[name] = i
+		colIndex[strings.ToLower(name)] = i
 	}
 
-	whereIdx, ok := colIndex[where.Column]
+	whereIdx, ok := colIndex[strings.ToLower(where.Column)]
 	if !ok {
 		return nil, 0, fmt.Errorf("DELETE: unknown column %q in WHERE", where.Column)
 	}
