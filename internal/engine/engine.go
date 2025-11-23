@@ -35,32 +35,6 @@ func (e *DBEngine) Start() error {
 	return nil
 }
 
-// InsertRow inserts a single row into the given table using a transaction.
-func (e *DBEngine) InsertRow(tableName string, row sql.Row) error {
-	if !e.started {
-		return fmt.Errorf("engine not started")
-	}
-
-	// Start a read-write transaction.
-	tx, err := e.store.Begin(false /* readOnly */)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-
-	// Try to insert the row.
-	if err := tx.Insert(tableName, row); err != nil {
-		_ = e.store.Rollback(tx)
-		return fmt.Errorf("insert: %w", err)
-	}
-
-	// Commit the transaction.
-	if err := e.store.Commit(tx); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	return nil
-}
-
 // ListTables returns the names of all tables in the storage engine.
 func (e *DBEngine) ListTables() ([]string, error) {
 	if !e.started {
