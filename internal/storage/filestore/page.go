@@ -174,6 +174,51 @@ func (p pageBuf) iterateRows(numCols int, fn func(slot uint16, row sql.Row) erro
 }
 
 func (p pageBuf) deleteSlot(i uint16) {
+	// Capture existing offset/length so we can reclaim trailing space if possible.
+	off, length := p.getSlot(i)
+
 	// Mark as deleted. We use 0xFFFF/0 as the “tombstone” value.
 	p.setSlot(i, 0xFFFF, 0)
+
+	// If this row occupied the contiguous end of the in-use area, rewind freeStart
+	// to reclaim space. We walk backwards through rows that end at the current
+	// freeStart so consecutive deletions reclaim space in order of most recent
+	// inserts.
+	freeStart := p.freeStart()
+	if off != 0xFFFF && length != 0 {
+		if end := off + length; end == freeStart {
+			newFreeStart := off
+			for {
+				progressed := false
+				for idx := uint16(0); idx < p.numSlots(); idx++ {
+					o, l := p.getSlot(idx)
+					if o == 0xFFFF || l == 0 {
+						continue
+					}
+					if o+l == newFreeStart {
+						newFreeStart = o
+						progressed = true
+					}
+				}
+				if !progressed {
+					break
+				}
+			}
+			p.setFreeStart(newFreeStart)
+		}
+	}
+
+	// Shrink slot directory by dropping tombstones at the end. This allows
+	// future inserts to reclaim the slot-directory space in addition to row data.
+	nSlots := p.numSlots()
+	for nSlots > 0 {
+		lastIdx := nSlots - 1
+		o, l := p.getSlot(lastIdx)
+		if o == 0xFFFF && l == 0 {
+			nSlots--
+			p.setNumSlots(nSlots)
+			continue
+		}
+		break
+	}
 }
