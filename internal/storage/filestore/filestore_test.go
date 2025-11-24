@@ -341,3 +341,28 @@ func TestFilestore_CreateIndex(t *testing.T) {
 		t.Fatalf("index search for key 30 failed after insert")
 	}
 }
+
+func TestFilestore_CreateIndexErrors(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := New(dir)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	cols := []sql.Column{{Name: "id", Type: sql.TypeInt}, {Name: "name", Type: sql.TypeString}}
+	if err := fs.CreateTable("users", cols); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	if err := fs.CreateIndex("idx_id", "users", "id"); err != nil {
+		t.Fatalf("CreateIndex failed: %v", err)
+	}
+
+	if err := fs.CreateIndex("idx_id_dup", "users", "id"); err == nil {
+		t.Fatalf("expected duplicate index creation to fail")
+	}
+
+	if err := fs.CreateIndex("idx_name", "users", "name"); err == nil {
+		t.Fatalf("expected non-integer column index creation to fail")
+	}
+}

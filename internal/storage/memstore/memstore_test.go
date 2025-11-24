@@ -152,3 +152,27 @@ func TestMemstoreCreateIndex(t *testing.T) {
 		t.Fatalf("index search for key 30 failed after insert")
 	}
 }
+
+func TestMemstoreCreateIndexErrors(t *testing.T) {
+	store := NewWithDir(t.TempDir())
+
+	// Create a table with mixed column types.
+	if err := store.CreateTable("users", []sql.Column{{Name: "id", Type: sql.TypeInt}, {Name: "name", Type: sql.TypeString}}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	// Building the index once should succeed.
+	if err := store.CreateIndex("idx_id", "users", "id"); err != nil {
+		t.Fatalf("CreateIndex failed: %v", err)
+	}
+
+	// Creating another index on the same column should fail, even with a different name.
+	if err := store.CreateIndex("idx_id_dup", "users", "id"); err == nil {
+		t.Fatalf("expected duplicate index creation to fail")
+	}
+
+	// Creating an index on a non-integer column should fail.
+	if err := store.CreateIndex("idx_name", "users", "name"); err == nil {
+		t.Fatalf("expected non-integer column index creation to fail")
+	}
+}

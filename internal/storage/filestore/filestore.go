@@ -92,6 +92,15 @@ func New(dir string) (*FileEngine, error) {
 }
 
 func (e *FileEngine) CreateIndex(indexName, tableName, columnName string) error {
+	e.idxMu.RLock()
+	if columns, ok := e.indexes[tableName]; ok {
+		if _, exists := columns[columnName]; exists {
+			e.idxMu.RUnlock()
+			return fmt.Errorf("filestore: index on %s.%s already exists", tableName, columnName)
+		}
+	}
+	e.idxMu.RUnlock()
+
 	path := e.tablePath(tableName)
 	f, err := os.Open(path)
 	if err != nil {
@@ -136,34 +145,33 @@ func (e *FileEngine) CreateIndex(indexName, tableName, columnName string) error 
 		return fmt.Errorf("filestore: corrupt file, size < header")
 	}
 	dataBytes := fileSize - headerEnd
-	if dataBytes == 0 {
-		return nil // no data to index
-	}
-	if dataBytes%PageSize != 0 {
-		return fmt.Errorf("filestore: corrupt data (not multiple of page size)")
-	}
-	numPages := uint32(dataBytes / PageSize)
-
-	for pageID := uint32(0); pageID < numPages; pageID++ {
-		p := make(pageBuf, PageSize)
-		offset := headerEnd + int64(pageID)*PageSize
-		if _, err := f.ReadAt(p, offset); err != nil {
-			return fmt.Errorf("filestore: read page %d for index creation: %w", pageID, err)
+	if dataBytes > 0 {
+		if dataBytes%PageSize != 0 {
+			return fmt.Errorf("filestore: corrupt data (not multiple of page size)")
 		}
+		numPages := uint32(dataBytes / PageSize)
 
-		err := p.iterateRows(len(cols), func(slotID uint16, r sql.Row) error {
-			val := r[colIdx]
-			if val.Type == sql.TypeNull {
+		for pageID := uint32(0); pageID < numPages; pageID++ {
+			p := make(pageBuf, PageSize)
+			offset := headerEnd + int64(pageID)*PageSize
+			if _, err := f.ReadAt(p, offset); err != nil {
+				return fmt.Errorf("filestore: read page %d for index creation: %w", pageID, err)
+			}
+
+			err := p.iterateRows(len(cols), func(slotID uint16, r sql.Row) error {
+				val := r[colIdx]
+				if val.Type == sql.TypeNull {
+					return nil
+				}
+				rid := btree.RID{PageID: pageID, SlotID: slotID}
+				if err := bt.Insert(val.I64, rid); err != nil {
+					return fmt.Errorf("error building index: %w", err)
+				}
 				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("filestore: iterate rows in page %d for index creation: %w", pageID, err)
 			}
-			rid := btree.RID{PageID: pageID, SlotID: slotID}
-			if err := bt.Insert(val.I64, rid); err != nil {
-				return fmt.Errorf("error building index: %w", err)
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("filestore: iterate rows in page %d for index creation: %w", pageID, err)
 		}
 	}
 

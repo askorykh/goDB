@@ -52,6 +52,12 @@ func (e *memEngine) CreateIndex(indexName, tableName, columnName string) error {
 		return fmt.Errorf("index %q already exists", indexName)
 	}
 
+	for _, idx := range e.indexes {
+		if strings.EqualFold(idx.tableName, tableName) && strings.EqualFold(idx.columnName, columnName) {
+			return fmt.Errorf("index on %s.%s already exists", tableName, columnName)
+		}
+	}
+
 	tbl, ok := e.tables[tableName]
 	if !ok {
 		return fmt.Errorf("table %q not found", tableName)
