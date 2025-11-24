@@ -301,13 +301,67 @@ func (e *memEngine) Commit(tx storage.Tx) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	oldTables := e.tables
 	e.tables = m.tables
+
+	if err := e.rebuildIndexes(oldTables); err != nil {
+		return err
+	}
 	return nil
 }
 
 // Rollback aborts a transaction.
 // For this simple in-memory implementation, it's a no-op.
 func (e *memEngine) Rollback(tx storage.Tx) error {
+	return nil
+}
+
+func (e *memEngine) rebuildIndexes(oldTables map[string]*table) error {
+	for _, idx := range e.indexes {
+		newTbl, ok := e.tables[idx.tableName]
+		if !ok {
+			continue
+		}
+
+		colIdx := -1
+		for i, col := range newTbl.cols {
+			if strings.EqualFold(col.Name, idx.columnName) {
+				colIdx = i
+				break
+			}
+		}
+		if colIdx == -1 {
+			return fmt.Errorf("index %q references unknown column %q", idx.name, idx.columnName)
+		}
+
+		keysToDelete := make(map[btree.Key]struct{})
+		if oldTbl, ok := oldTables[idx.tableName]; ok {
+			for _, row := range oldTbl.rows {
+				val := row[colIdx]
+				if val.Type != sql.TypeNull {
+					keysToDelete[val.I64] = struct{}{}
+				}
+			}
+		}
+
+		for key := range keysToDelete {
+			if err := idx.btree.DeleteKey(key); err != nil {
+				return fmt.Errorf("error clearing index %q: %w", idx.name, err)
+			}
+		}
+
+		for slot, row := range newTbl.rows {
+			val := row[colIdx]
+			if val.Type == sql.TypeNull {
+				continue
+			}
+			rid := btree.RID{PageID: 0, SlotID: uint16(slot)}
+			if err := idx.btree.Insert(val.I64, rid); err != nil {
+				return fmt.Errorf("error rebuilding index %q: %w", idx.name, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -335,30 +389,7 @@ func (tx *memTx) Insert(tableName string, row sql.Row) error {
 	}
 
 	// Add the row to the table.
-	newRowIndex := len(t.rows)
 	t.rows = append(t.rows, row)
-
-	// Update indexes.
-	for _, idx := range tx.eng.indexes {
-		if idx.tableName == tableName {
-			colIdx := -1
-			for i, col := range t.cols {
-				if strings.EqualFold(col.Name, idx.columnName) {
-					colIdx = i
-					break
-				}
-			}
-			if colIdx != -1 {
-				val := row[colIdx]
-				if val.Type != sql.TypeNull {
-					rid := btree.RID{PageID: 0, SlotID: uint16(newRowIndex)}
-					if err := idx.btree.Insert(val.I64, rid); err != nil {
-						return fmt.Errorf("error updating index %q: %w", idx.name, err)
-					}
-				}
-			}
-		}
-	}
 
 	return nil
 }

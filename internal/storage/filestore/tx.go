@@ -7,6 +7,7 @@ import (
 	"goDB/internal/storage"
 	"io"
 	"os"
+	"strings"
 )
 
 // fileTx implements storage.Tx for FileEngine.
@@ -468,6 +469,10 @@ func (tx *fileTx) ReplaceAll(tableName string, rows []sql.Row) error {
 	if err != nil {
 		return fmt.Errorf("filestore: read header in replace: %w", err)
 	}
+	headerEnd, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fmt.Errorf("filestore: seek after header in replace: %w", err)
+	}
 	if len(cols) == 0 {
 		return fmt.Errorf("filestore: replace on table %q with no columns", tableName)
 	}
@@ -476,6 +481,77 @@ func (tx *fileTx) ReplaceAll(tableName string, rows []sql.Row) error {
 		if len(r) != len(cols) {
 			return fmt.Errorf("filestore: replace row %d length mismatch: got %d, expected %d",
 				i, len(r), len(cols))
+		}
+	}
+
+	tx.eng.idxMu.RLock()
+	idxInfos, hasIndexes := tx.eng.indexes[tableName]
+	tx.eng.idxMu.RUnlock()
+
+	indexColumns := make(map[int]*indexInfo)
+	if hasIndexes {
+		for colName, info := range idxInfos {
+			colIdx := -1
+			for i, c := range cols {
+				if strings.EqualFold(c.Name, colName) {
+					colIdx = i
+					break
+				}
+			}
+			if colIdx == -1 {
+				return fmt.Errorf("filestore: index on unknown column %q for table %q", colName, tableName)
+			}
+			indexColumns[colIdx] = info
+		}
+	}
+
+	oldKeys := make(map[int]map[btree.Key]struct{})
+	if len(indexColumns) > 0 {
+		fi, err := f.Stat()
+		if err != nil {
+			return fmt.Errorf("filestore: stat table in replace: %w", err)
+		}
+		fileSize := fi.Size()
+		if fileSize < headerEnd {
+			return fmt.Errorf("filestore: corrupt file, size < header")
+		}
+		dataBytes := fileSize - headerEnd
+		if dataBytes%PageSize != 0 {
+			return fmt.Errorf("filestore: corrupt data in replace (not multiple of page size)")
+		}
+		numPages := uint32(dataBytes / PageSize)
+
+		for pageID := uint32(0); pageID < numPages; pageID++ {
+			p := make(pageBuf, PageSize)
+			offset := headerEnd + int64(pageID)*PageSize
+			if _, err := f.ReadAt(p, offset); err != nil {
+				return fmt.Errorf("filestore: read page %d in replace: %w", pageID, err)
+			}
+
+			if err := p.iterateRows(len(cols), func(_ uint16, r sql.Row) error {
+				for colIdx := range indexColumns {
+					val := r[colIdx]
+					if val.Type == sql.TypeNull {
+						continue
+					}
+					if oldKeys[colIdx] == nil {
+						oldKeys[colIdx] = make(map[btree.Key]struct{})
+					}
+					oldKeys[colIdx][val.I64] = struct{}{}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	for colIdx, keys := range oldKeys {
+		idx := indexColumns[colIdx]
+		for key := range keys {
+			if err := idx.btree.DeleteKey(key); err != nil {
+				return fmt.Errorf("filestore: clear index %q: %w", idx.name, err)
+			}
 		}
 	}
 
@@ -488,7 +564,7 @@ func (tx *fileTx) ReplaceAll(tableName string, rows []sql.Row) error {
 	if err := writeHeader(f, cols); err != nil {
 		return fmt.Errorf("filestore: write header in replace: %w", err)
 	}
-	headerEnd, err := f.Seek(0, io.SeekCurrent)
+	headerEnd, err = f.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return fmt.Errorf("filestore: seek after header in replace: %w", err)
 	}
@@ -510,14 +586,28 @@ func (tx *fileTx) ReplaceAll(tableName string, rows []sql.Row) error {
 			return fmt.Errorf("filestore: encode row in replace: %w", err)
 		}
 
-		if _, err := p.insertRow(rowBytes); err != nil {
+		var slotID uint16
+		slotID, err = p.insertRow(rowBytes)
+		if err != nil {
 			if err := writePage(pageID, p); err != nil {
 				return err
 			}
 			pageID++
 			p = newEmptyHeapPage(pageID)
-			if _, err := p.insertRow(rowBytes); err != nil {
+			slotID, err = p.insertRow(rowBytes)
+			if err != nil {
 				return fmt.Errorf("filestore: insert into new page in replace: %w", err)
+			}
+		}
+
+		for colIdx, idx := range indexColumns {
+			val := r[colIdx]
+			if val.Type == sql.TypeNull {
+				continue
+			}
+			rid := btree.RID{PageID: pageID, SlotID: slotID}
+			if err := idx.btree.Insert(val.I64, rid); err != nil {
+				return fmt.Errorf("filestore: update index %q in replace: %w", idx.name, err)
 			}
 		}
 	}
