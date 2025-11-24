@@ -6,47 +6,182 @@ import (
 	"goDB/internal/index/btree"
 	"goDB/internal/sql"
 	"goDB/internal/storage"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 )
 
+type indexInfo struct {
+	name       string
+	tableName  string
+	columnName string
+	btree      btree.Index
+}
+
 // FileEngine is a simple on-disk storage engine.
-// It stores one file per table in the given directory.
-//
-// Layout:
-//
-//	[header][rows...]
-//
-// Header:
-//
-//	magic:     5 bytes "GODB1"
-//	numCols:   uint16
-//	per column:
-//	  nameLen: uint16
-//	  name:    nameLen bytes (UTF-8)
-//	  type:    uint8 (matches sql.DataType)
-//
-// Rows:
-//
-//	For each row:
-//	  For each column:
-//	    type: uint8 (sql.DataType, allows NULL vs non-NULL)
-//	    payload (depends on type):
-//	      INT:    int64 (little endian)
-//	      FLOAT:  float64 (little endian)
-//	      STRING: uint32 length + bytes
-//	      BOOL:   1 byte (0 or 1)
-//	      NULL:   no payload
 type FileEngine struct {
 	dir string
 	wal *walLogger
 
-	// tx ID generator (for write tx only)
 	mu       sync.Mutex
 	nextTxID uint64
 	indexMgr *btree.Manager
+
+	idxMu   sync.RWMutex
+	indexes map[string]map[string]*indexInfo // tableName -> columnName -> info
+}
+
+// New creates a new FileEngine storing all tables in dir.
+func New(dir string) (*FileEngine, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("filestore: create dir: %w", err)
+	}
+
+	w, err := newWAL(dir)
+	if err != nil {
+		return nil, fmt.Errorf("filestore: init WAL: %w", err)
+	}
+
+	e := &FileEngine{
+		dir:      dir,
+		wal:      w,
+		nextTxID: 1,
+		indexes:  make(map[string]map[string]*indexInfo),
+	}
+
+	e.indexMgr = btree.NewManager(dir)
+
+	// Load existing indexes from disk.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("filestore: read dir to load indexes: %w", err)
+	}
+	for _, ent := range entries {
+		name := ent.Name()
+		if strings.HasSuffix(name, ".idx") {
+			parts := strings.Split(strings.TrimSuffix(name, ".idx"), "_")
+			if len(parts) == 2 {
+				tableName := parts[0]
+				columnName := parts[1]
+
+				bt, err := e.indexMgr.OpenOrCreateIndex(tableName, columnName)
+				if err != nil {
+					return nil, fmt.Errorf("filestore: could not open existing index %s: %w", name, err)
+				}
+				if e.indexes[tableName] == nil {
+					e.indexes[tableName] = make(map[string]*indexInfo)
+				}
+				e.indexes[tableName][columnName] = &indexInfo{
+					name:       name, // Use filename as internal name
+					tableName:  tableName,
+					columnName: columnName,
+					btree:      bt,
+				}
+			}
+		}
+	}
+
+	// Recover database state from WAL on startup.
+	if err := e.recoverFromWAL(); err != nil {
+		return nil, fmt.Errorf("filestore: recovery failed: %w", err)
+	}
+
+	return e, nil
+}
+
+func (e *FileEngine) CreateIndex(indexName, tableName, columnName string) error {
+	path := e.tablePath(tableName)
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("filestore: open table for index creation: %w", err)
+	}
+	defer f.Close()
+
+	cols, err := readHeader(f)
+	if err != nil {
+		return fmt.Errorf("filestore: read header for index creation: %w", err)
+	}
+	headerEnd, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fmt.Errorf("filestore: seek after header for index creation: %w", err)
+	}
+
+	colIdx := -1
+	for i, c := range cols {
+		if strings.EqualFold(c.Name, columnName) {
+			colIdx = i
+			break
+		}
+	}
+	if colIdx == -1 {
+		return fmt.Errorf("filestore: column %q not found in table %q", columnName, tableName)
+	}
+	if cols[colIdx].Type != sql.TypeInt {
+		return fmt.Errorf("filestore: cannot create index on non-integer column %q", columnName)
+	}
+
+	bt, err := e.indexMgr.OpenOrCreateIndex(tableName, columnName)
+	if err != nil {
+		return fmt.Errorf("filestore: could not create index: %w", err)
+	}
+
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("filestore: stat table for index creation: %w", err)
+	}
+	fileSize := fi.Size()
+	if fileSize < headerEnd {
+		return fmt.Errorf("filestore: corrupt file, size < header")
+	}
+	dataBytes := fileSize - headerEnd
+	if dataBytes == 0 {
+		return nil // no data to index
+	}
+	if dataBytes%PageSize != 0 {
+		return fmt.Errorf("filestore: corrupt data (not multiple of page size)")
+	}
+	numPages := uint32(dataBytes / PageSize)
+
+	for pageID := uint32(0); pageID < numPages; pageID++ {
+		p := make(pageBuf, PageSize)
+		offset := headerEnd + int64(pageID)*PageSize
+		if _, err := f.ReadAt(p, offset); err != nil {
+			return fmt.Errorf("filestore: read page %d for index creation: %w", pageID, err)
+		}
+
+		err := p.iterateRows(len(cols), func(slotID uint16, r sql.Row) error {
+			val := r[colIdx]
+			if val.Type == sql.TypeNull {
+				return nil
+			}
+			rid := btree.RID{PageID: pageID, SlotID: slotID}
+			if err := bt.Insert(val.I64, rid); err != nil {
+				return fmt.Errorf("error building index: %w", err)
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("filestore: iterate rows in page %d for index creation: %w", pageID, err)
+		}
+	}
+
+	// Register the index in the engine's in-memory map.
+	e.idxMu.Lock()
+	defer e.idxMu.Unlock()
+
+	if e.indexes[tableName] == nil {
+		e.indexes[tableName] = make(map[string]*indexInfo)
+	}
+	e.indexes[tableName][columnName] = &indexInfo{
+		name:       indexName,
+		tableName:  tableName,
+		columnName: columnName,
+		btree:      bt,
+	}
+
+	return nil
 }
 
 // ListTables returns all *.godb files in the storage directory.
@@ -60,7 +195,6 @@ func (e *FileEngine) ListTables() ([]string, error) {
 	for _, ent := range entries {
 		name := ent.Name()
 		if strings.HasSuffix(name, ".godb") {
-			// table name = filename without extension
 			t := strings.TrimSuffix(name, ".godb")
 			tables = append(tables, t)
 		}
@@ -86,36 +220,7 @@ func (e *FileEngine) TableSchema(name string) ([]sql.Column, error) {
 	return cols, nil
 }
 
-// New creates a new FileEngine storing all tables in dir.
-func New(dir string) (*FileEngine, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("filestore: create dir: %w", err)
-	}
-
-	w, err := newWAL(dir)
-	if err != nil {
-		return nil, fmt.Errorf("filestore: init WAL: %w", err)
-	}
-
-	e := &FileEngine{
-		dir:      dir,
-		wal:      w,
-		nextTxID: 1,
-	}
-
-	e.indexMgr = btree.NewManager(dir)
-
-	// Recover database state from WAL on startup.
-	if err := e.recoverFromWAL(); err != nil {
-		return nil, fmt.Errorf("filestore: recovery failed: %w", err)
-	}
-
-	return e, nil
-}
-
 func (e *FileEngine) tablePath(name string) string {
-	// very simple mapping: "<dir>/<name>.godb"
-	// (you may want to sanitize name further later)
 	return filepath.Join(e.dir, name+".godb")
 }
 
@@ -145,8 +250,6 @@ func (e *FileEngine) CreateTable(name string, cols []sql.Column) error {
 }
 
 // Begin starts a new (very simple) transaction.
-// NOTE: For now this does NOT support rollback-on-disk; it is mainly
-// used to group operations logically. Real WAL/rollback can be added later.
 func (e *FileEngine) Begin(readOnly bool) (storage.Tx, error) {
 	tx := &fileTx{
 		eng:      e,
@@ -155,7 +258,6 @@ func (e *FileEngine) Begin(readOnly bool) (storage.Tx, error) {
 		id:       0,
 	}
 
-	// Only write transactions get a txID and BEGIN record.
 	if !readOnly {
 		e.mu.Lock()
 		txID := e.nextTxID
@@ -178,7 +280,6 @@ func (e *FileEngine) Commit(tx storage.Tx) error {
 		return err
 	}
 
-	// For write transactions, append COMMIT and sync WAL.
 	if !ft.readOnly && ft.id != 0 {
 		if err := e.wal.appendCommit(ft.id); err != nil {
 			return fmt.Errorf("filestore: WAL COMMIT: %w", err)
@@ -198,7 +299,6 @@ func (e *FileEngine) Rollback(tx storage.Tx) error {
 		return err
 	}
 
-	// Still no actual undo on disk, but we log ROLLBACK for future recovery logic.
 	if !ft.readOnly && ft.id != 0 {
 		if err := e.wal.appendRollback(ft.id); err != nil {
 			return fmt.Errorf("filestore: WAL ROLLBACK: %w", err)

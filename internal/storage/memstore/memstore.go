@@ -2,9 +2,11 @@ package memstore
 
 import (
 	"fmt"
+	"goDB/internal/index/btree"
 	"goDB/internal/sql"
 	"goDB/internal/storage"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -14,16 +16,88 @@ type table struct {
 	rows []sql.Row    // stored rows
 }
 
-type memEngine struct {
-	mu     sync.RWMutex
-	tables map[string]*table
+type index struct {
+	name       string
+	tableName  string
+	columnName string
+	btree      btree.Index
 }
 
-// New creates a new in-memory storage engine.
+type memEngine struct {
+	mu      sync.RWMutex
+	tables  map[string]*table
+	indexes map[string]*index
+	idxMan  *btree.Manager
+}
+
+// New creates a new in-memory storage engine with the default data directory.
 func New() storage.Engine {
+	return NewWithDir("data")
+}
+
+// NewWithDir creates a new in-memory storage engine with the given data directory.
+func NewWithDir(dir string) storage.Engine {
 	return &memEngine{
-		tables: make(map[string]*table),
+		tables:  make(map[string]*table),
+		indexes: make(map[string]*index),
+		idxMan:  btree.NewManager(dir),
 	}
+}
+
+func (e *memEngine) CreateIndex(indexName, tableName, columnName string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if _, exists := e.indexes[indexName]; exists {
+		return fmt.Errorf("index %q already exists", indexName)
+	}
+
+	tbl, ok := e.tables[tableName]
+	if !ok {
+		return fmt.Errorf("table %q not found", tableName)
+	}
+
+	colIdx := -1
+	for i, col := range tbl.cols {
+		if strings.EqualFold(col.Name, columnName) {
+			colIdx = i
+			break
+		}
+	}
+
+	if colIdx == -1 {
+		return fmt.Errorf("column %q not found in table %q", columnName, tableName)
+	}
+
+	if tbl.cols[colIdx].Type != sql.TypeInt {
+		return fmt.Errorf("cannot create index on non-integer column %q", columnName)
+	}
+
+	bt, err := e.idxMan.OpenOrCreateIndex(tableName, columnName)
+	if err != nil {
+		return fmt.Errorf("could not create index: %w", err)
+	}
+
+	// Populate the index with existing data.
+	for i, row := range tbl.rows {
+		val := row[colIdx]
+		if val.Type == sql.TypeNull {
+			continue
+		}
+		rid := btree.RID{PageID: 0, SlotID: uint16(i)}
+		if err := bt.Insert(val.I64, rid); err != nil {
+			return fmt.Errorf("error building index: %w", err)
+		}
+	}
+
+	e.indexes[indexName] = &index{
+		name:       indexName,
+		tableName:  tableName,
+		columnName: columnName,
+		btree:      bt,
+	}
+
+	return nil
 }
 
 func (e *memEngine) ListTables() ([]string, error) {
@@ -254,7 +328,32 @@ func (tx *memTx) Insert(tableName string, row sql.Row) error {
 		}
 	}
 
+	// Add the row to the table.
+	newRowIndex := len(t.rows)
 	t.rows = append(t.rows, row)
+
+	// Update indexes.
+	for _, idx := range tx.eng.indexes {
+		if idx.tableName == tableName {
+			colIdx := -1
+			for i, col := range t.cols {
+				if strings.EqualFold(col.Name, idx.columnName) {
+					colIdx = i
+					break
+				}
+			}
+			if colIdx != -1 {
+				val := row[colIdx]
+				if val.Type != sql.TypeNull {
+					rid := btree.RID{PageID: 0, SlotID: uint16(newRowIndex)}
+					if err := idx.btree.Insert(val.I64, rid); err != nil {
+						return fmt.Errorf("error updating index %q: %w", idx.name, err)
+					}
+				}
+			}
+		}
+	}
+
 	return nil
 }
 

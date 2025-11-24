@@ -27,10 +27,15 @@ func Parse(query string) (Statement, error) {
 
 	switch tokens[0] {
 	case "CREATE":
-		if len(tokens) >= 2 && tokens[1] == "TABLE" {
-			return parseCreateTable(q)
+		if len(tokens) >= 2 {
+			switch tokens[1] {
+			case "TABLE":
+				return parseCreateTable(q)
+			case "INDEX":
+				return parseCreateIndex(q)
+			}
 		}
-		return nil, fmt.Errorf("invalid SQL statement")
+		return nil, fmt.Errorf("invalid CREATE statement")
 	case "INSERT":
 		if len(tokens) >= 2 && tokens[1] == "INTO" {
 			return parseInsert(q)
@@ -49,7 +54,7 @@ func Parse(query string) (Statement, error) {
 	case "ROLLBACK":
 		return parseRollback(q)
 	default:
-		return nil, fmt.Errorf("unsupported statement (supported: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, BEGIN, COMMIT, ROLLBACK)")
+		return nil, fmt.Errorf("unsupported statement (supported: CREATE TABLE, CREATE INDEX, INSERT, SELECT, UPDATE, DELETE, BEGIN, COMMIT, ROLLBACK)")
 	}
 
 }
