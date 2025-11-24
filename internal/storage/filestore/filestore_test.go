@@ -277,3 +277,92 @@ func TestFilestore_CreateTableTooManyColumns(t *testing.T) {
 		t.Fatalf("table file should not remain after failure")
 	}
 }
+
+func TestFilestore_CreateIndex(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := New(dir)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	cols := []sql.Column{{Name: "id", Type: sql.TypeInt}}
+	if err := fs.CreateTable("users", cols); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	tx, err := fs.Begin(false)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	if err := tx.Insert("users", sql.Row{{Type: sql.TypeInt, I64: 10}}); err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+	if err := tx.Insert("users", sql.Row{{Type: sql.TypeInt, I64: 20}}); err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+	if err := fs.Commit(tx); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	if err := fs.CreateIndex("idx_id", "users", "id"); err != nil {
+		t.Fatalf("CreateIndex failed: %v", err)
+	}
+
+	// Verify index contents
+	bt, err := fs.indexMgr.OpenOrCreateIndex("users", "id")
+	if err != nil {
+		t.Fatalf("OpenOrCreateIndex failed: %v", err)
+	}
+
+	rids, err := bt.Search(10)
+	if err != nil || len(rids) != 1 || rids[0].PageID != 0 || rids[0].SlotID != 0 {
+		t.Fatalf("index search for key 10 failed")
+	}
+
+	rids, err = bt.Search(20)
+	if err != nil || len(rids) != 1 || rids[0].PageID != 0 || rids[0].SlotID != 1 {
+		t.Fatalf("index search for key 20 failed")
+	}
+
+	// Insert a new row and check if the index is updated
+	tx2, err := fs.Begin(false)
+	if err != nil {
+		t.Fatalf("Begin2 failed: %v", err)
+	}
+	if err := tx2.Insert("users", sql.Row{{Type: sql.TypeInt, I64: 30}}); err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+	if err := fs.Commit(tx2); err != nil {
+		t.Fatalf("Commit2 failed: %v", err)
+	}
+
+	rids, err = bt.Search(30)
+	if err != nil || len(rids) != 1 || rids[0].PageID != 0 || rids[0].SlotID != 2 {
+		t.Fatalf("index search for key 30 failed after insert")
+	}
+}
+
+func TestFilestore_CreateIndexErrors(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := New(dir)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	cols := []sql.Column{{Name: "id", Type: sql.TypeInt}, {Name: "name", Type: sql.TypeString}}
+	if err := fs.CreateTable("users", cols); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	if err := fs.CreateIndex("idx_id", "users", "id"); err != nil {
+		t.Fatalf("CreateIndex failed: %v", err)
+	}
+
+	if err := fs.CreateIndex("idx_id_dup", "users", "id"); err == nil {
+		t.Fatalf("expected duplicate index creation to fail")
+	}
+
+	if err := fs.CreateIndex("idx_name", "users", "name"); err == nil {
+		t.Fatalf("expected non-integer column index creation to fail")
+	}
+}

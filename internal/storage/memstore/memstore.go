@@ -2,9 +2,11 @@ package memstore
 
 import (
 	"fmt"
+	"goDB/internal/index/btree"
 	"goDB/internal/sql"
 	"goDB/internal/storage"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -14,16 +16,94 @@ type table struct {
 	rows []sql.Row    // stored rows
 }
 
-type memEngine struct {
-	mu     sync.RWMutex
-	tables map[string]*table
+type index struct {
+	name       string
+	tableName  string
+	columnName string
+	btree      btree.Index
 }
 
-// New creates a new in-memory storage engine.
+type memEngine struct {
+	mu      sync.RWMutex
+	tables  map[string]*table
+	indexes map[string]*index
+	idxMan  *btree.Manager
+}
+
+// New creates a new in-memory storage engine with the default data directory.
 func New() storage.Engine {
+	return NewWithDir("data")
+}
+
+// NewWithDir creates a new in-memory storage engine with the given data directory.
+func NewWithDir(dir string) storage.Engine {
 	return &memEngine{
-		tables: make(map[string]*table),
+		tables:  make(map[string]*table),
+		indexes: make(map[string]*index),
+		idxMan:  btree.NewManager(dir),
 	}
+}
+
+func (e *memEngine) CreateIndex(indexName, tableName, columnName string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if _, exists := e.indexes[indexName]; exists {
+		return fmt.Errorf("index %q already exists", indexName)
+	}
+
+	for _, idx := range e.indexes {
+		if strings.EqualFold(idx.tableName, tableName) && strings.EqualFold(idx.columnName, columnName) {
+			return fmt.Errorf("index on %s.%s already exists", tableName, columnName)
+		}
+	}
+
+	tbl, ok := e.tables[tableName]
+	if !ok {
+		return fmt.Errorf("table %q not found", tableName)
+	}
+
+	colIdx := -1
+	for i, col := range tbl.cols {
+		if strings.EqualFold(col.Name, columnName) {
+			colIdx = i
+			break
+		}
+	}
+
+	if colIdx == -1 {
+		return fmt.Errorf("column %q not found in table %q", columnName, tableName)
+	}
+
+	if tbl.cols[colIdx].Type != sql.TypeInt {
+		return fmt.Errorf("cannot create index on non-integer column %q", columnName)
+	}
+
+	bt, err := e.idxMan.OpenOrCreateIndex(tableName, columnName)
+	if err != nil {
+		return fmt.Errorf("could not create index: %w", err)
+	}
+
+	// Populate the index with existing data.
+	for i, row := range tbl.rows {
+		val := row[colIdx]
+		if val.Type == sql.TypeNull {
+			continue
+		}
+		rid := btree.RID{PageID: 0, SlotID: uint16(i)}
+		if err := bt.Insert(val.I64, rid); err != nil {
+			return fmt.Errorf("error building index: %w", err)
+		}
+	}
+
+	e.indexes[indexName] = &index{
+		name:       indexName,
+		tableName:  tableName,
+		columnName: columnName,
+		btree:      bt,
+	}
+
+	return nil
 }
 
 func (e *memEngine) ListTables() ([]string, error) {
@@ -221,13 +301,67 @@ func (e *memEngine) Commit(tx storage.Tx) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	oldTables := e.tables
 	e.tables = m.tables
+
+	if err := e.rebuildIndexes(oldTables); err != nil {
+		return err
+	}
 	return nil
 }
 
 // Rollback aborts a transaction.
 // For this simple in-memory implementation, it's a no-op.
 func (e *memEngine) Rollback(tx storage.Tx) error {
+	return nil
+}
+
+func (e *memEngine) rebuildIndexes(oldTables map[string]*table) error {
+	for _, idx := range e.indexes {
+		newTbl, ok := e.tables[idx.tableName]
+		if !ok {
+			continue
+		}
+
+		colIdx := -1
+		for i, col := range newTbl.cols {
+			if strings.EqualFold(col.Name, idx.columnName) {
+				colIdx = i
+				break
+			}
+		}
+		if colIdx == -1 {
+			return fmt.Errorf("index %q references unknown column %q", idx.name, idx.columnName)
+		}
+
+		keysToDelete := make(map[btree.Key]struct{})
+		if oldTbl, ok := oldTables[idx.tableName]; ok {
+			for _, row := range oldTbl.rows {
+				val := row[colIdx]
+				if val.Type != sql.TypeNull {
+					keysToDelete[val.I64] = struct{}{}
+				}
+			}
+		}
+
+		for key := range keysToDelete {
+			if err := idx.btree.DeleteKey(key); err != nil {
+				return fmt.Errorf("error clearing index %q: %w", idx.name, err)
+			}
+		}
+
+		for slot, row := range newTbl.rows {
+			val := row[colIdx]
+			if val.Type == sql.TypeNull {
+				continue
+			}
+			rid := btree.RID{PageID: 0, SlotID: uint16(slot)}
+			if err := idx.btree.Insert(val.I64, rid); err != nil {
+				return fmt.Errorf("error rebuilding index %q: %w", idx.name, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -254,7 +388,9 @@ func (tx *memTx) Insert(tableName string, row sql.Row) error {
 		}
 	}
 
+	// Add the row to the table.
 	t.rows = append(t.rows, row)
+
 	return nil
 }
 

@@ -16,6 +16,9 @@ const (
 
 	maxLeafKeys     = (PageSize - 16) / leafEntrySize
 	maxInternalKeys = (PageSize - 16 - 4) / internalEntrySize // 4 bytes for initial child0
+
+	minLeafKeys     = maxLeafKeys / 2
+	minInternalKeys = maxInternalKeys / 2
 )
 
 type fileIndex struct {
@@ -130,14 +133,109 @@ func (idx *fileIndex) Insert(key Key, rid RID) error {
 }
 
 func (idx *fileIndex) Delete(key Key, rid RID) error {
-	// We'll implement proper delete later.
-	// For now, just return not implemented so it compiles.
-	return fmt.Errorf("btree: Delete not implemented yet")
+	leafID, leafPage, path, err := idx.findLeafForKeyWithPath(key)
+	if err != nil {
+		return err
+	}
+
+	h := readPageHeader(leafPage)
+	if h.PageType != PageTypeLeaf {
+		return fmt.Errorf("btree: Delete: expected leaf, got type %d", h.PageType)
+	}
+
+	keys, rids := leafReadAll(leafPage, h)
+	if len(keys) == 0 {
+		return nil
+	}
+
+	oldFirst := keys[0]
+	idxToDelete := -1
+	for i := range keys {
+		if keys[i] == key && rids[i] == rid {
+			idxToDelete = i
+			break
+		}
+	}
+	if idxToDelete == -1 {
+		return nil
+	}
+
+	keys = append(keys[:idxToDelete], keys[idxToDelete+1:]...)
+	rids = append(rids[:idxToDelete], rids[idxToDelete+1:]...)
+
+	leafWriteAll(leafPage, keys, rids)
+	if err := idx.writePage(leafID, leafPage); err != nil {
+		return err
+	}
+
+	if leafID == idx.rootPageID {
+		return nil
+	}
+
+	if len(keys) > 0 && keys[0] != oldFirst {
+		if err := idx.updateAncestorMinKeys(leafID, path); err != nil {
+			return err
+		}
+	}
+
+	if len(keys) < minLeafKeys {
+		if err := idx.rebalanceAfterDelete(leafID, path); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (idx *fileIndex) DeleteKey(key Key) error {
-	// Also to be implemented later.
-	return fmt.Errorf("btree: DeleteKey not implemented yet")
+	leafID, leafPage, path, err := idx.findLeafForKeyWithPath(key)
+	if err != nil {
+		return err
+	}
+
+	h := readPageHeader(leafPage)
+	if h.PageType != PageTypeLeaf {
+		return fmt.Errorf("btree: DeleteKey: expected leaf, got type %d", h.PageType)
+	}
+
+	keys, rids := leafReadAll(leafPage, h)
+	filteredKeys := make([]Key, 0, len(keys))
+	filteredRIDs := make([]RID, 0, len(rids))
+	for i := range keys {
+		if keys[i] == key {
+			continue
+		}
+		filteredKeys = append(filteredKeys, keys[i])
+		filteredRIDs = append(filteredRIDs, rids[i])
+	}
+
+	if len(filteredKeys) == len(keys) {
+		return nil
+	}
+
+	oldFirst := Key(0)
+	if len(keys) > 0 {
+		oldFirst = keys[0]
+	}
+
+	leafWriteAll(leafPage, filteredKeys, filteredRIDs)
+	if err := idx.writePage(leafID, leafPage); err != nil {
+		return err
+	}
+
+	if leafID != idx.rootPageID && len(filteredKeys) > 0 && filteredKeys[0] != oldFirst {
+		if err := idx.updateAncestorMinKeys(leafID, path); err != nil {
+			return err
+		}
+	}
+
+	if leafID != idx.rootPageID && len(filteredKeys) < minLeafKeys {
+		if err := idx.rebalanceAfterDelete(leafID, path); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Search implements Index.Search: return all RIDs for a given key.
@@ -623,4 +721,497 @@ func (idx *fileIndex) insertIntoParent(leftID, rightID uint32, sepKey Key, path 
 	}
 
 	return idx.insertIntoParent(parentID, rightParentID, promote, parentPath)
+}
+
+// findMinKey walks down the subtree rooted at pageID and returns its minimal key.
+func (idx *fileIndex) findMinKey(pageID uint32) (Key, bool, error) {
+	p, err := idx.readPage(pageID)
+	if err != nil {
+		return 0, false, err
+	}
+	h := readPageHeader(p)
+	switch h.PageType {
+	case PageTypeLeaf:
+		if h.NumKeys == 0 {
+			return 0, false, nil
+		}
+		return leafGetKey(p, 0), true, nil
+	case PageTypeInternal:
+		children, _, err := internalReadAll(p, h)
+		if err != nil {
+			return 0, false, err
+		}
+		return idx.findMinKey(children[0])
+	default:
+		return 0, false, fmt.Errorf("btree: findMinKey: unknown page type %d", h.PageType)
+	}
+}
+
+// updateAncestorMinKeys ensures separator keys on the path remain accurate after
+// a leaf/internal first-key change. `path` must include the child as its last element.
+func (idx *fileIndex) updateAncestorMinKeys(childID uint32, path []uint32) error {
+	if len(path) < 2 {
+		return nil
+	}
+
+	parentID := path[len(path)-2]
+	parentPage, err := idx.readPage(parentID)
+	if err != nil {
+		return err
+	}
+	ph := readPageHeader(parentPage)
+	if ph.PageType != PageTypeInternal {
+		return fmt.Errorf("btree: expected internal parent, got type %d", ph.PageType)
+	}
+
+	children, keys, err := internalReadAll(parentPage, ph)
+	if err != nil {
+		return err
+	}
+
+	pos := -1
+	for i, c := range children {
+		if c == childID {
+			pos = i
+			break
+		}
+	}
+	if pos == -1 {
+		return fmt.Errorf("btree: parent %d missing child %d", parentID, childID)
+	}
+
+	minKey, ok, err := idx.findMinKey(childID)
+	if err != nil {
+		return err
+	}
+	if ok && pos > 0 && keys[pos-1] != minKey {
+		keys[pos-1] = minKey
+		if err := internalWriteAll(parentPage, ph, children, keys); err != nil {
+			return err
+		}
+		if err := idx.writePage(parentID, parentPage); err != nil {
+			return err
+		}
+	}
+
+	// Propagate upwards since parent's first key may have changed.
+	return idx.updateAncestorMinKeys(parentID, path[:len(path)-1])
+}
+
+func (idx *fileIndex) rebalanceAfterDelete(nodeID uint32, path []uint32) error {
+	if len(path) < 2 {
+		return nil
+	}
+
+	parentID := path[len(path)-2]
+	parentPath := path[:len(path)-1]
+
+	parentPage, err := idx.readPage(parentID)
+	if err != nil {
+		return err
+	}
+	ph := readPageHeader(parentPage)
+	if ph.PageType != PageTypeInternal {
+		return fmt.Errorf("btree: rebalance: parent type %d is not internal", ph.PageType)
+	}
+
+	children, keys, err := internalReadAll(parentPage, ph)
+	if err != nil {
+		return err
+	}
+
+	pos := -1
+	for i, c := range children {
+		if c == nodeID {
+			pos = i
+			break
+		}
+	}
+	if pos == -1 {
+		return fmt.Errorf("btree: parent %d missing child %d", parentID, nodeID)
+	}
+
+	nodePage, err := idx.readPage(nodeID)
+	if err != nil {
+		return err
+	}
+	nh := readPageHeader(nodePage)
+
+	switch nh.PageType {
+	case PageTypeLeaf:
+		return idx.rebalanceLeaf(nodeID, nodePage, pos, parentID, parentPath, parentPage, ph, children, keys)
+	case PageTypeInternal:
+		return idx.rebalanceInternal(nodeID, nodePage, pos, parentID, parentPath, parentPage, ph, children, keys)
+	default:
+		return fmt.Errorf("btree: unknown node type %d during rebalance", nh.PageType)
+	}
+}
+
+func (idx *fileIndex) rebalanceLeaf(nodeID uint32, nodePage []byte, pos int, parentID uint32, parentPath []uint32, parentPage []byte, ph PageHeader, children []uint32, keys []Key) error {
+	nh := readPageHeader(nodePage)
+	nodeKeys, nodeRIDs := leafReadAll(nodePage, nh)
+
+	// Borrow from left sibling if possible.
+	if pos > 0 {
+		leftID := children[pos-1]
+		leftPage, err := idx.readPage(leftID)
+		if err != nil {
+			return err
+		}
+		lh := readPageHeader(leftPage)
+		leftKeys, leftRIDs := leafReadAll(leftPage, lh)
+		if len(leftKeys) > minLeafKeys {
+			borrowedKey := leftKeys[len(leftKeys)-1]
+			borrowedRID := leftRIDs[len(leftRIDs)-1]
+
+			leftKeys = leftKeys[:len(leftKeys)-1]
+			leftRIDs = leftRIDs[:len(leftRIDs)-1]
+			nodeKeys = append([]Key{borrowedKey}, nodeKeys...)
+			nodeRIDs = append([]RID{borrowedRID}, nodeRIDs...)
+
+			leafWriteAll(leftPage, leftKeys, leftRIDs)
+			if err := idx.writePage(leftID, leftPage); err != nil {
+				return err
+			}
+
+			leafWriteAll(nodePage, nodeKeys, nodeRIDs)
+			if err := idx.writePage(nodeID, nodePage); err != nil {
+				return err
+			}
+
+			keys[pos-1] = nodeKeys[0]
+			if err := internalWriteAll(parentPage, ph, children, keys); err != nil {
+				return err
+			}
+			if err := idx.writePage(parentID, parentPage); err != nil {
+				return err
+			}
+
+			return idx.updateAncestorMinKeys(nodeID, append(parentPath, nodeID))
+		}
+	}
+
+	// Borrow from right sibling.
+	if pos+1 < len(children) {
+		rightID := children[pos+1]
+		rightPage, err := idx.readPage(rightID)
+		if err != nil {
+			return err
+		}
+		rh := readPageHeader(rightPage)
+		rightKeys, rightRIDs := leafReadAll(rightPage, rh)
+		if len(rightKeys) > minLeafKeys {
+			borrowedKey := rightKeys[0]
+			borrowedRID := rightRIDs[0]
+
+			rightKeys = rightKeys[1:]
+			rightRIDs = rightRIDs[1:]
+			nodeKeys = append(nodeKeys, borrowedKey)
+			nodeRIDs = append(nodeRIDs, borrowedRID)
+
+			leafWriteAll(nodePage, nodeKeys, nodeRIDs)
+			if err := idx.writePage(nodeID, nodePage); err != nil {
+				return err
+			}
+
+			leafWriteAll(rightPage, rightKeys, rightRIDs)
+			if err := idx.writePage(rightID, rightPage); err != nil {
+				return err
+			}
+
+			if len(rightKeys) > 0 {
+				keys[pos] = rightKeys[0]
+			}
+			if err := internalWriteAll(parentPage, ph, children, keys); err != nil {
+				return err
+			}
+			if err := idx.writePage(parentID, parentPage); err != nil {
+				return err
+			}
+
+			return idx.updateAncestorMinKeys(nodeID, append(parentPath, nodeID))
+		}
+	}
+
+	// Merge with sibling.
+	if pos > 0 {
+		leftID := children[pos-1]
+		leftPage, err := idx.readPage(leftID)
+		if err != nil {
+			return err
+		}
+		lh := readPageHeader(leftPage)
+		leftKeys, leftRIDs := leafReadAll(leftPage, lh)
+
+		mergedKeys := append(leftKeys, nodeKeys...)
+		mergedRIDs := append(leftRIDs, nodeRIDs...)
+
+		leafWriteAll(leftPage, mergedKeys, mergedRIDs)
+		if err := idx.writePage(leftID, leftPage); err != nil {
+			return err
+		}
+
+		// Remove node entry from parent.
+		children = append(children[:pos], children[pos+1:]...)
+		keys = append(keys[:pos-1], keys[pos:]...)
+		ph.NumKeys = uint32(len(keys))
+		if err := internalWriteAll(parentPage, ph, children, keys); err != nil {
+			return err
+		}
+		if err := idx.writePage(parentID, parentPage); err != nil {
+			return err
+		}
+
+		if err := idx.handleParentAfterMerge(parentID, parentPath, children, keys); err != nil {
+			return err
+		}
+
+		return idx.updateAncestorMinKeys(leftID, append(parentPath, leftID))
+	}
+
+	// Merge with right sibling.
+	rightID := children[pos+1]
+	rightPage, err := idx.readPage(rightID)
+	if err != nil {
+		return err
+	}
+	rh := readPageHeader(rightPage)
+	rightKeys, rightRIDs := leafReadAll(rightPage, rh)
+
+	mergedKeys := append(nodeKeys, rightKeys...)
+	mergedRIDs := append(nodeRIDs, rightRIDs...)
+
+	leafWriteAll(nodePage, mergedKeys, mergedRIDs)
+	if err := idx.writePage(nodeID, nodePage); err != nil {
+		return err
+	}
+
+	children = append(children[:pos+1], children[pos+2:]...)
+	keys = append(keys[:pos], keys[pos+1:]...)
+	ph.NumKeys = uint32(len(keys))
+	if err := internalWriteAll(parentPage, ph, children, keys); err != nil {
+		return err
+	}
+	if err := idx.writePage(parentID, parentPage); err != nil {
+		return err
+	}
+
+	if err := idx.handleParentAfterMerge(parentID, parentPath, children, keys); err != nil {
+		return err
+	}
+
+	return idx.updateAncestorMinKeys(nodeID, append(parentPath, nodeID))
+}
+
+func (idx *fileIndex) rebalanceInternal(nodeID uint32, nodePage []byte, pos int, parentID uint32, parentPath []uint32, parentPage []byte, ph PageHeader, children []uint32, keys []Key) error {
+	nh := readPageHeader(nodePage)
+	nodeChildren, nodeKeys, err := internalReadAll(nodePage, nh)
+	if err != nil {
+		return err
+	}
+
+	// Borrow from left sibling if possible.
+	if pos > 0 {
+		leftID := children[pos-1]
+		leftPage, err := idx.readPage(leftID)
+		if err != nil {
+			return err
+		}
+		lh := readPageHeader(leftPage)
+		leftChildren, leftKeys, err := internalReadAll(leftPage, lh)
+		if err != nil {
+			return err
+		}
+		if len(leftKeys) > minInternalKeys {
+			borrowedKey := keys[pos-1]
+			borrowedChild := leftChildren[len(leftChildren)-1]
+
+			keys[pos-1] = leftKeys[len(leftKeys)-1]
+			leftKeys = leftKeys[:len(leftKeys)-1]
+			leftChildren = leftChildren[:len(leftChildren)-1]
+
+			nodeKeys = append([]Key{borrowedKey}, nodeKeys...)
+			nodeChildren = append([]uint32{borrowedChild}, nodeChildren...)
+
+			lh.NumKeys = uint32(len(leftKeys))
+			if err := internalWriteAll(leftPage, lh, leftChildren, leftKeys); err != nil {
+				return err
+			}
+			if err := idx.writePage(leftID, leftPage); err != nil {
+				return err
+			}
+
+			nh.NumKeys = uint32(len(nodeKeys))
+			if err := internalWriteAll(nodePage, nh, nodeChildren, nodeKeys); err != nil {
+				return err
+			}
+			if err := idx.writePage(nodeID, nodePage); err != nil {
+				return err
+			}
+
+			if err := internalWriteAll(parentPage, ph, children, keys); err != nil {
+				return err
+			}
+			if err := idx.writePage(parentID, parentPage); err != nil {
+				return err
+			}
+
+			return idx.updateAncestorMinKeys(nodeID, append(parentPath, nodeID))
+		}
+	}
+
+	// Borrow from right sibling.
+	if pos+1 < len(children) {
+		rightID := children[pos+1]
+		rightPage, err := idx.readPage(rightID)
+		if err != nil {
+			return err
+		}
+		rh := readPageHeader(rightPage)
+		rightChildren, rightKeys, err := internalReadAll(rightPage, rh)
+		if err != nil {
+			return err
+		}
+		if len(rightKeys) > minInternalKeys {
+			borrowedKey := keys[pos]
+			borrowedChild := rightChildren[0]
+
+			keys[pos] = rightKeys[0]
+			rightKeys = rightKeys[1:]
+			rightChildren = rightChildren[1:]
+
+			nodeKeys = append(nodeKeys, borrowedKey)
+			nodeChildren = append(nodeChildren, borrowedChild)
+
+			rh.NumKeys = uint32(len(rightKeys))
+			if err := internalWriteAll(rightPage, rh, rightChildren, rightKeys); err != nil {
+				return err
+			}
+			if err := idx.writePage(rightID, rightPage); err != nil {
+				return err
+			}
+
+			nh.NumKeys = uint32(len(nodeKeys))
+			if err := internalWriteAll(nodePage, nh, nodeChildren, nodeKeys); err != nil {
+				return err
+			}
+			if err := idx.writePage(nodeID, nodePage); err != nil {
+				return err
+			}
+
+			if err := internalWriteAll(parentPage, ph, children, keys); err != nil {
+				return err
+			}
+			if err := idx.writePage(parentID, parentPage); err != nil {
+				return err
+			}
+
+			return idx.updateAncestorMinKeys(nodeID, append(parentPath, nodeID))
+		}
+	}
+
+	// Merge with sibling.
+	if pos > 0 {
+		leftID := children[pos-1]
+		leftPage, err := idx.readPage(leftID)
+		if err != nil {
+			return err
+		}
+		lh := readPageHeader(leftPage)
+		leftChildren, leftKeys, err := internalReadAll(leftPage, lh)
+		if err != nil {
+			return err
+		}
+
+		mergedKeys := append(leftKeys, keys[pos-1])
+		mergedKeys = append(mergedKeys, nodeKeys...)
+		mergedChildren := append(leftChildren, nodeChildren...)
+
+		lh.NumKeys = uint32(len(mergedKeys))
+		if err := internalWriteAll(leftPage, lh, mergedChildren, mergedKeys); err != nil {
+			return err
+		}
+		if err := idx.writePage(leftID, leftPage); err != nil {
+			return err
+		}
+
+		children = append(children[:pos], children[pos+1:]...)
+		keys = append(keys[:pos-1], keys[pos:]...)
+		ph.NumKeys = uint32(len(keys))
+		if err := internalWriteAll(parentPage, ph, children, keys); err != nil {
+			return err
+		}
+		if err := idx.writePage(parentID, parentPage); err != nil {
+			return err
+		}
+
+		if err := idx.handleParentAfterMerge(parentID, parentPath, children, keys); err != nil {
+			return err
+		}
+
+		return idx.updateAncestorMinKeys(leftID, append(parentPath, leftID))
+	}
+
+	// Merge with right sibling.
+	rightID := children[pos+1]
+	rightPage, err := idx.readPage(rightID)
+	if err != nil {
+		return err
+	}
+	rh := readPageHeader(rightPage)
+	rightChildren, rightKeys, err := internalReadAll(rightPage, rh)
+	if err != nil {
+		return err
+	}
+
+	mergedKeys := append(nodeKeys, keys[pos])
+	mergedKeys = append(mergedKeys, rightKeys...)
+	mergedChildren := append(nodeChildren, rightChildren...)
+
+	nh.NumKeys = uint32(len(mergedKeys))
+	if err := internalWriteAll(nodePage, nh, mergedChildren, mergedKeys); err != nil {
+		return err
+	}
+	if err := idx.writePage(nodeID, nodePage); err != nil {
+		return err
+	}
+
+	children = append(children[:pos+1], children[pos+2:]...)
+	keys = append(keys[:pos], keys[pos+1:]...)
+	ph.NumKeys = uint32(len(keys))
+	if err := internalWriteAll(parentPage, ph, children, keys); err != nil {
+		return err
+	}
+	if err := idx.writePage(parentID, parentPage); err != nil {
+		return err
+	}
+
+	if err := idx.handleParentAfterMerge(parentID, parentPath, children, keys); err != nil {
+		return err
+	}
+
+	return idx.updateAncestorMinKeys(nodeID, append(parentPath, nodeID))
+}
+
+func (idx *fileIndex) handleParentAfterMerge(parentID uint32, parentPath []uint32, children []uint32, keys []Key) error {
+	if parentID == idx.rootPageID {
+		if len(keys) == 0 && len(children) == 1 {
+			idx.rootPageID = children[0]
+			if err := writeFileHeader(idx.f, idx.rootPageID, idx.pageCount); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	parentPage, err := idx.readPage(parentID)
+	if err != nil {
+		return err
+	}
+	ph := readPageHeader(parentPage)
+	if int(ph.NumKeys) >= minInternalKeys {
+		return nil
+	}
+
+	return idx.rebalanceAfterDelete(parentID, parentPath)
 }

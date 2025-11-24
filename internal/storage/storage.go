@@ -43,6 +43,9 @@ type Engine interface {
 	// For now, we only support simple "name + list of columns".
 	CreateTable(name string, cols []sql.Column) error
 
+	// CreateIndex creates a new index on a table's column.
+	CreateIndex(indexName, tableName, columnName string) error
+
 	// ListTables returns the names of all tables in the engine.
 	ListTables() ([]string, error)
 

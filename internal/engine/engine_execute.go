@@ -24,6 +24,10 @@ func (e *DBEngine) Execute(stmt sql.Statement) ([]string, []sql.Row, error) {
 		err := e.CreateTable(s.TableName, s.Columns)
 		return nil, nil, err
 
+	case *sql.CreateIndexStmt:
+		err := e.store.CreateIndex(s.IndexName, s.TableName, s.ColumnName)
+		return nil, nil, err
+
 	case *sql.InsertStmt:
 		return nil, nil, e.executeInsert(s)
 
