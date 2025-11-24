@@ -245,3 +245,101 @@ func TestInternalSplitGrowsTreeHeight(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteRemovesRIDAndBorrows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "idx.idx")
+
+	idxIface, err := OpenFileIndex(path, Meta{TableName: "t", Column: "id"})
+	if err != nil {
+		t.Fatalf("OpenFileIndex failed: %v", err)
+	}
+	idx := idxIface.(*fileIndex)
+	defer idx.Close()
+
+	total := maxLeafKeys + 1 // force split into two leaves
+	for i := 0; i < total; i++ {
+		rid := RID{PageID: uint32(i + 1), SlotID: uint16(i)}
+		if err := idx.Insert(Key(i), rid); err != nil {
+			t.Fatalf("Insert %d failed: %v", i, err)
+		}
+	}
+
+	// Delete a couple from the leftmost leaf to trigger a borrow from the right sibling.
+	for _, k := range []Key{0, 1} {
+		if err := idx.Delete(k, RID{PageID: uint32(k + 1), SlotID: uint16(k)}); err != nil {
+			t.Fatalf("Delete %d failed: %v", k, err)
+		}
+		if got, _ := idx.Search(k); len(got) != 0 {
+			t.Fatalf("expected key %d to be removed", k)
+		}
+	}
+
+	rootPage, err := idx.readPage(idx.rootPageID)
+	if err != nil {
+		t.Fatalf("read root failed: %v", err)
+	}
+	rh := readPageHeader(rootPage)
+	if rh.PageType != PageTypeInternal {
+		t.Fatalf("root type = %d, want internal", rh.PageType)
+	}
+	children, keys, err := internalReadAll(rootPage, rh)
+	if err != nil {
+		t.Fatalf("internalReadAll failed: %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children after borrow, got %d", len(children))
+	}
+
+	leftPage, _ := idx.readPage(children[0])
+	rightPage, _ := idx.readPage(children[1])
+	if lh := readPageHeader(leftPage); lh.NumKeys != uint32(minLeafKeys) {
+		t.Fatalf("left leaf keys = %d, want %d after borrow", lh.NumKeys, minLeafKeys)
+	}
+	if rhh := readPageHeader(rightPage); rhh.NumKeys != uint32(minLeafKeys) {
+		t.Fatalf("right leaf keys = %d, want %d after borrow", rhh.NumKeys, minLeafKeys)
+	}
+
+	if keys[0] != Key(minLeafKeys+2) {
+		t.Fatalf("separator after borrow = %d, want %d", keys[0], Key(minLeafKeys+2))
+	}
+}
+
+func TestDeleteKeyCollapsesRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "idx.idx")
+
+	idxIface, err := OpenFileIndex(path, Meta{TableName: "t", Column: "id"})
+	if err != nil {
+		t.Fatalf("OpenFileIndex failed: %v", err)
+	}
+	idx := idxIface.(*fileIndex)
+	defer idx.Close()
+
+	total := maxLeafKeys + 1
+	for i := 0; i < total; i++ {
+		rid := RID{PageID: uint32(i + 1), SlotID: uint16(i)}
+		if err := idx.Insert(Key(i), rid); err != nil {
+			t.Fatalf("Insert %d failed: %v", i, err)
+		}
+	}
+
+	// Remove all keys to force merges up to the root.
+	for i := 0; i < total; i++ {
+		if err := idx.DeleteKey(Key(i)); err != nil {
+			t.Fatalf("DeleteKey %d failed: %v", i, err)
+		}
+	}
+
+	rootPage, err := idx.readPage(idx.rootPageID)
+	if err != nil {
+		t.Fatalf("read root failed: %v", err)
+	}
+	rh := readPageHeader(rootPage)
+	if rh.PageType != PageTypeLeaf {
+		t.Fatalf("root type = %d, want leaf after collapse", rh.PageType)
+	}
+	if rh.NumKeys != 0 {
+		t.Fatalf("root NumKeys = %d, want 0 after full deletion", rh.NumKeys)
+	}
+}
