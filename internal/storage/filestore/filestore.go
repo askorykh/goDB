@@ -3,6 +3,7 @@ package filestore
 import (
 	"errors"
 	"fmt"
+	"goDB/internal/index/btree"
 	"goDB/internal/sql"
 	"goDB/internal/storage"
 	"os"
@@ -45,6 +46,7 @@ type FileEngine struct {
 	// tx ID generator (for write tx only)
 	mu       sync.Mutex
 	nextTxID uint64
+	indexMgr *btree.Manager
 }
 
 // ListTables returns all *.godb files in the storage directory.
@@ -100,6 +102,8 @@ func New(dir string) (*FileEngine, error) {
 		wal:      w,
 		nextTxID: 1,
 	}
+
+	e.indexMgr = btree.NewManager(dir)
 
 	// Recover database state from WAL on startup.
 	if err := e.recoverFromWAL(); err != nil {
