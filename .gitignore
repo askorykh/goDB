@@ -28,15 +28,5 @@ go.work.sum
 .env
 
 # Editor/IDE
- .idea/
+# .idea/
 # .vscode/
-/.idea/.gitignore
-/.idea/codeStyles/codeStyleConfig.xml
-/.idea/goDB.iml
-/.idea/modules.xml
-/.idea/sqldialects.xml
-/.idea/vcs.xml
-
-# Generated demo assets
-docs/repl-demo.gif
-/data/

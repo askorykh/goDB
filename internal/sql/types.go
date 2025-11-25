@@ -8,11 +8,11 @@ const (
 	TypeFloat
 	TypeString
 	TypeBool
-	TypeNull // represents a NULL/DEFAULT literal
 )
 
 // Value represents a single cell in a table (one column in one row).
-// Only the field matching Type is meaningful.
+// Only the field matching Type should be read; other fields remain at their
+// zero values to keep the struct compact and easy to inspect while debugging.
 type Value struct {
 	Type DataType
 
