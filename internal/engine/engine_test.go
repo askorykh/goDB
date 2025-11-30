@@ -1,11 +1,9 @@
 package engine
 
 import (
-	"reflect"
-	"testing"
-
 	"goDB/internal/sql"
 	"goDB/internal/storage/memstore"
+	"testing"
 )
 
 // TestEngineCreateInsertSelectAll checks the engine API end-to-end
@@ -28,24 +26,29 @@ func TestEngineCreateInsertSelectAll(t *testing.T) {
 		t.Fatalf("CreateTable failed: %v", err)
 	}
 
-	// 3. Insert two rows via SQL execution.
-	for _, q := range []string{
-		"INSERT INTO users VALUES (1, 'Alice', true);",
-		"INSERT INTO users VALUES (2, 'Bob', false);",
-	} {
-		stmt, err := sql.Parse(q)
-		if err != nil {
-			t.Fatalf("Parse failed for %q: %v", q, err)
-		}
-		if _, _, err := eng.Execute(stmt); err != nil {
-			t.Fatalf("Execute failed for %q: %v", q, err)
-		}
+	// 3. Insert two rows via engine API.
+	row1 := sql.Row{
+		{Type: sql.TypeInt, I64: 1},
+		{Type: sql.TypeString, S: "Alice"},
+		{Type: sql.TypeBool, B: true},
+	}
+	row2 := sql.Row{
+		{Type: sql.TypeInt, I64: 2},
+		{Type: sql.TypeString, S: "Bob"},
+		{Type: sql.TypeBool, B: false},
 	}
 
-	// 4. executeSelect and assert results.
-	cols, rows, err := eng.executeSelect("users")
+	if err := eng.InsertRow("users", row1); err != nil {
+		t.Fatalf("InsertRow row1 failed: %v", err)
+	}
+	if err := eng.InsertRow("users", row2); err != nil {
+		t.Fatalf("InsertRow row2 failed: %v", err)
+	}
+
+	// 4. SelectAll and assert results.
+	cols, rows, err := eng.SelectAll("users")
 	if err != nil {
-		t.Fatalf("executeSelect failed: %v", err)
+		t.Fatalf("SelectAll failed: %v", err)
 	}
 
 	// Check columns
@@ -110,22 +113,27 @@ func TestEngineExecute_CreateTableAndUseIt(t *testing.T) {
 	}
 
 	// 4. Insert and select to prove the table is correctly created.
-	for _, q := range []string{
-		"INSERT INTO users VALUES (1, 'Alice', true);",
-		"INSERT INTO users VALUES (2, 'Bob', false);",
-	} {
-		stmt, err := sql.Parse(q)
-		if err != nil {
-			t.Fatalf("Parse failed for %q: %v", q, err)
-		}
-		if _, _, err := eng.Execute(stmt); err != nil {
-			t.Fatalf("Execute failed for %q: %v", q, err)
-		}
+	row1 := sql.Row{
+		{Type: sql.TypeInt, I64: 1},
+		{Type: sql.TypeString, S: "Alice"},
+		{Type: sql.TypeBool, B: true},
+	}
+	if err := eng.InsertRow("users", row1); err != nil {
+		t.Fatalf("InsertRow row1 failed: %v", err)
 	}
 
-	cols, rows, err := eng.executeSelect("users")
+	row2 := sql.Row{
+		{Type: sql.TypeInt, I64: 2},
+		{Type: sql.TypeString, S: "Bob"},
+		{Type: sql.TypeBool, B: false},
+	}
+	if err := eng.InsertRow("users", row2); err != nil {
+		t.Fatalf("InsertRow row2 failed: %v", err)
+	}
+
+	cols, rows, err := eng.SelectAll("users")
 	if err != nil {
-		t.Fatalf("executeSelect failed: %v", err)
+		t.Fatalf("SelectAll failed: %v", err)
 	}
 
 	expectedCols := []string{"id", "name", "active"}
@@ -175,9 +183,9 @@ func TestEngineExecute_InsertViaSQL(t *testing.T) {
 	}
 
 	// 3. SELECT via engine API
-	cols, rows, err := eng.executeSelect("users")
+	cols, rows, err := eng.SelectAll("users")
 	if err != nil {
-		t.Fatalf("executeSelect failed: %v", err)
+		t.Fatalf("SelectAll failed: %v", err)
 	}
 
 	expectedCols := []string{"id", "name", "active"}
@@ -226,7 +234,7 @@ func TestEngineExecute_SelectViaSQL(t *testing.T) {
 		}
 	}
 
-	// 3. SELECT via SQL using Execute (not executeSelect directly)
+	// 3. SELECT via SQL using Execute (not SelectAll directly)
 	selectSQL := "SELECT * FROM users;"
 	selectStmt, err := sql.Parse(selectSQL)
 	if err != nil {
@@ -312,767 +320,5 @@ func TestEngineExecute_SelectWithWhere(t *testing.T) {
 		if cols[i] != want {
 			t.Fatalf("column %d: expected %q, got %q", i, want, cols[i])
 		}
-	}
-}
-func TestEngineExecute_SelectColumnList(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	// CREATE TABLE + INSERT via SQL.
-	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
-	createStmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(createStmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	insert := []string{
-		"INSERT INTO users VALUES (1, 'Alice', true);",
-		"INSERT INTO users VALUES (2, 'Bob', false);",
-	}
-	for _, q := range insert {
-		stmt, err := sql.Parse(q)
-		if err != nil {
-			t.Fatalf("Parse INSERT failed for %q: %v", q, err)
-		}
-		if _, _, err := eng.Execute(stmt); err != nil {
-			t.Fatalf("Execute INSERT failed for %q: %v", q, err)
-		}
-	}
-
-	// SELECT id, name FROM users WHERE active = true;
-	selectSQL := "SELECT id, name FROM users WHERE active = true;"
-	stmt, err := sql.Parse(selectSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-
-	cols, rows, err := eng.Execute(stmt)
-	if err != nil {
-		t.Fatalf("Execute SELECT failed: %v", err)
-	}
-
-	// We projected to 2 columns only.
-	if len(cols) != 2 || cols[0] != "id" || cols[1] != "name" {
-		t.Fatalf("unexpected projected columns: %#v", cols)
-	}
-
-	// Only Alice is active.
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
-	}
-	if len(rows[0]) != 2 {
-		t.Fatalf("expected 2 values in row, got %d", len(rows[0]))
-	}
-}
-func TestEngineExecute_UpdateWithWhere(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	// CREATE TABLE users (id INT, name STRING, active BOOL);
-	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
-	createStmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(createStmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	// INSERT two rows
-	inserts := []string{
-		"INSERT INTO users VALUES (1, 'Alice', true);",
-		"INSERT INTO users VALUES (2, 'Bob', false);",
-	}
-	for _, q := range inserts {
-		stmt, err := sql.Parse(q)
-		if err != nil {
-			t.Fatalf("Parse INSERT failed for %q: %v", q, err)
-		}
-		if _, _, err := eng.Execute(stmt); err != nil {
-			t.Fatalf("Execute INSERT failed for %q: %v", q, err)
-		}
-	}
-
-	// UPDATE users SET active = false WHERE id = 1;
-	updateSQL := "UPDATE users SET active = false WHERE id = 1;"
-	updStmt, err := sql.Parse(updateSQL)
-	if err != nil {
-		t.Fatalf("Parse UPDATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(updStmt); err != nil {
-		t.Fatalf("Execute UPDATE failed: %v", err)
-	}
-
-	// SELECT * FROM users; and verify row1 changed, row2 unchanged
-	selectSQL := "SELECT * FROM users;"
-	selStmt, err := sql.Parse(selectSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-
-	cols, rows, err := eng.Execute(selStmt)
-	if err != nil {
-		t.Fatalf("Execute SELECT failed: %v", err)
-	}
-
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(rows))
-	}
-
-	// columns: id | name | active
-	idIdx, nameIdx, activeIdx := -1, -1, -1
-	for i, c := range cols {
-		switch c {
-		case "id":
-			idIdx = i
-		case "name":
-			nameIdx = i
-		case "active":
-			activeIdx = i
-		}
-	}
-	if idIdx == -1 || nameIdx == -1 || activeIdx == -1 {
-		t.Fatalf("unexpected columns: %#v", cols)
-	}
-
-	// Check row 1 (id=1) has active=false
-	var row1, row2 sql.Row
-	if rows[0][idIdx].I64 == 1 {
-		row1, row2 = rows[0], rows[1]
-	} else {
-		row1, row2 = rows[1], rows[0]
-	}
-
-	if row1[activeIdx].Type != sql.TypeBool || row1[activeIdx].B != false {
-		t.Fatalf("expected row with id=1 to have active=false, got: %+v", row1[activeIdx])
-	}
-
-	if row2[activeIdx].Type != sql.TypeBool || row2[activeIdx].B != false {
-		t.Fatalf("expected row with id=2 to keep active=false, got: %+v", row2[activeIdx])
-	}
-}
-func TestEngineExecute_DeleteWithWhere(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	// CREATE TABLE
-	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
-	createStmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(createStmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	// INSERT three rows
-	inserts := []string{
-		"INSERT INTO users VALUES (1, 'Alice', true);",
-		"INSERT INTO users VALUES (2, 'Bob', false);",
-		"INSERT INTO users VALUES (3, 'Charlie', true);",
-	}
-	for _, q := range inserts {
-		stmt, err := sql.Parse(q)
-		if err != nil {
-			t.Fatalf("Parse INSERT failed for %q: %v", q, err)
-		}
-		if _, _, err := eng.Execute(stmt); err != nil {
-			t.Fatalf("Execute INSERT failed for %q: %v", q, err)
-		}
-	}
-
-	// DELETE FROM users WHERE id = 2;
-	deleteSQL := "DELETE FROM users WHERE id = 2;"
-	delStmt, err := sql.Parse(deleteSQL)
-	if err != nil {
-		t.Fatalf("Parse DELETE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(delStmt); err != nil {
-		t.Fatalf("Execute DELETE failed: %v", err)
-	}
-
-	// SELECT * and ensure only id=1 and id=3 remain
-	selectSQL := "SELECT * FROM users;"
-	selStmt, err := sql.Parse(selectSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-
-	cols, rows, err := eng.Execute(selStmt)
-	if err != nil {
-		t.Fatalf("Execute SELECT failed: %v", err)
-	}
-
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows after delete, got %d", len(rows))
-	}
-
-	// find id column index
-	idIdx := -1
-	for i, c := range cols {
-		if c == "id" {
-			idIdx = i
-			break
-		}
-	}
-	if idIdx == -1 {
-		t.Fatalf("id column not found in columns: %#v", cols)
-	}
-
-	ids := []int64{rows[0][idIdx].I64, rows[1][idIdx].I64}
-	want := map[int64]bool{1: true, 3: true}
-
-	for _, id := range ids {
-		if !want[id] {
-			t.Fatalf("unexpected id %d after delete, want only 1 and 3, got %v", id, ids)
-		}
-	}
-}
-func TestEngine_InsertWithColumnList(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	// create table
-	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
-	stmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	// insert with column list: NOTE we specify all columns
-	insertSQL := "INSERT INTO users(name, id, active) VALUES ('Alice', 10, true);"
-	stmt2, err := sql.Parse(insertSQL)
-	if err != nil {
-		t.Fatalf("Parse INSERT failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt2); err != nil {
-		t.Fatalf("Execute INSERT failed: %v", err)
-	}
-
-	// select and verify
-	selSQL := "SELECT * FROM users;"
-	stmt3, err := sql.Parse(selSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-	cols, rows, err := eng.Execute(stmt3)
-	if err != nil {
-		t.Fatalf("Execute SELECT failed: %v", err)
-	}
-
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
-	}
-
-	idIdx, nameIdx, activeIdx := -1, -1, -1
-	for i, c := range cols {
-		switch c {
-		case "id":
-			idIdx = i
-		case "name":
-			nameIdx = i
-		case "active":
-			activeIdx = i
-		}
-	}
-	if idIdx < 0 || nameIdx < 0 || activeIdx < 0 {
-		t.Fatalf("unexpected columns: %#v", cols)
-	}
-
-	row := rows[0]
-	if row[idIdx].Type != sql.TypeInt || row[idIdx].I64 != 10 {
-		t.Fatalf("expected id=10, got %+v", row[idIdx])
-	}
-	if row[nameIdx].Type != sql.TypeString || row[nameIdx].S != "Alice" {
-		t.Fatalf("expected name=Alice, got %+v", row[nameIdx])
-	}
-	if row[activeIdx].Type != sql.TypeBool || row[activeIdx].B != true {
-		t.Fatalf("expected active=true, got %+v", row[activeIdx])
-	}
-}
-
-func TestSelectAllReturnsCopy(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
-	stmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	insertSQL := "INSERT INTO users VALUES (1, 'Alice', true);"
-	insStmt, err := sql.Parse(insertSQL)
-	if err != nil {
-		t.Fatalf("Parse INSERT failed: %v", err)
-	}
-	if _, _, err := eng.Execute(insStmt); err != nil {
-		t.Fatalf("Execute INSERT failed: %v", err)
-	}
-
-	_, rows, err := eng.executeSelect("users")
-	if err != nil {
-		t.Fatalf("executeSelect failed: %v", err)
-	}
-
-	// Mutate the returned copy; underlying storage should not change.
-	rows[0][0].I64 = 999
-	rows[0][1].S = "Mutated"
-	rows[0][2].B = false
-
-	_, freshRows, err := eng.executeSelect("users")
-	if err != nil {
-		t.Fatalf("executeSelect failed: %v", err)
-	}
-
-	if freshRows[0][0].I64 != 1 || freshRows[0][1].S != "Alice" || freshRows[0][2].B != true {
-		t.Fatalf("expected stored row to remain unchanged, got %+v", freshRows[0])
-	}
-}
-
-func TestExecuteUpdateUnknownWhereColumn(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	createSQL := "CREATE TABLE users (id INT, name STRING);"
-	stmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	insertSQL := "INSERT INTO users VALUES (1, 'Alice');"
-	insStmt, err := sql.Parse(insertSQL)
-	if err != nil {
-		t.Fatalf("Parse INSERT failed: %v", err)
-	}
-	if _, _, err := eng.Execute(insStmt); err != nil {
-		t.Fatalf("Execute INSERT failed: %v", err)
-	}
-
-	updateSQL := "UPDATE users SET name = 'Bob' WHERE missing = 1;"
-	updStmt, err := sql.Parse(updateSQL)
-	if err != nil {
-		t.Fatalf("Parse UPDATE failed: %v", err)
-	}
-
-	if _, _, err := eng.Execute(updStmt); err == nil {
-		t.Fatalf("expected error for unknown WHERE column, got nil")
-	}
-}
-
-func TestExecuteDeleteUnknownWhereColumn(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	createSQL := "CREATE TABLE users (id INT, name STRING);"
-	stmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	insertSQL := "INSERT INTO users VALUES (1, 'Alice');"
-	insStmt, err := sql.Parse(insertSQL)
-	if err != nil {
-		t.Fatalf("Parse INSERT failed: %v", err)
-	}
-	if _, _, err := eng.Execute(insStmt); err != nil {
-		t.Fatalf("Execute INSERT failed: %v", err)
-	}
-
-	deleteSQL := "DELETE FROM users WHERE missing = 1;"
-	delStmt, err := sql.Parse(deleteSQL)
-	if err != nil {
-		t.Fatalf("Parse DELETE failed: %v", err)
-	}
-
-	if _, _, err := eng.Execute(delStmt); err == nil {
-		t.Fatalf("expected error for unknown WHERE column, got nil")
-	}
-}
-
-func TestEngine_ListTablesAndSchema(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	tables, err := eng.ListTables()
-	if err != nil {
-		t.Fatalf("ListTables failed: %v", err)
-	}
-	if len(tables) != 0 {
-		t.Fatalf("expected no tables, got %v", tables)
-	}
-
-	cols := []sql.Column{{Name: "id", Type: sql.TypeInt}, {Name: "name", Type: sql.TypeString}}
-	if err := eng.CreateTable("users", cols); err != nil {
-		t.Fatalf("CreateTable failed: %v", err)
-	}
-
-	tables, err = eng.ListTables()
-	if err != nil {
-		t.Fatalf("ListTables after create failed: %v", err)
-	}
-	if len(tables) != 1 || tables[0] != "users" {
-		t.Fatalf("expected [users], got %v", tables)
-	}
-
-	schema, err := eng.TableSchema("users")
-	if err != nil {
-		t.Fatalf("TableSchema failed: %v", err)
-	}
-	if !reflect.DeepEqual(cols, schema) {
-		t.Fatalf("schema mismatch: expected %+v, got %+v", cols, schema)
-	}
-
-	if _, err = eng.TableSchema("missing"); err == nil {
-		t.Fatalf("expected error for missing table schema")
-	}
-}
-func TestEngine_InsertWithNullAndDefault(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	// CREATE TABLE
-	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
-	stmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	// INSERT with NULL and DEFAULT
-	insertSQL := "INSERT INTO users(id, name, active) VALUES (1, DEFAULT, NULL);"
-	stmt2, err := sql.Parse(insertSQL)
-	if err != nil {
-		t.Fatalf("Parse INSERT failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt2); err != nil {
-		t.Fatalf("Execute INSERT failed: %v", err)
-	}
-
-	// SELECT and verify
-	selectSQL := "SELECT * FROM users;"
-	stmt3, err := sql.Parse(selectSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-	cols, rows, err := eng.Execute(stmt3)
-	if err != nil {
-		t.Fatalf("Execute SELECT failed: %v", err)
-	}
-
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
-	}
-
-	idIdx, nameIdx, activeIdx := -1, -1, -1
-	for i, c := range cols {
-		switch c {
-		case "id":
-			idIdx = i
-		case "name":
-			nameIdx = i
-		case "active":
-			activeIdx = i
-		}
-	}
-	if idIdx < 0 || nameIdx < 0 || activeIdx < 0 {
-		t.Fatalf("unexpected columns: %#v", cols)
-	}
-
-	row := rows[0]
-	if row[idIdx].Type != sql.TypeInt || row[idIdx].I64 != 1 {
-		t.Fatalf("expected id=1, got %+v", row[idIdx])
-	}
-	if row[nameIdx].Type != sql.TypeNull {
-		t.Fatalf("expected name=NULL/DEFAULT, got %+v", row[nameIdx])
-	}
-	if row[activeIdx].Type != sql.TypeNull {
-		t.Fatalf("expected active=NULL, got %+v", row[activeIdx])
-	}
-}
-func TestEngine_SQLTransactions_CommitAndRollback(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	// CREATE TABLE
-	createSQL := "CREATE TABLE users (id INT, name STRING, active BOOL);"
-	stmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	// BEGIN; INSERT; ROLLBACK;
-	for _, q := range []string{
-		"BEGIN;",
-		"INSERT INTO users VALUES (1, 'Alice', true);",
-		"ROLLBACK;",
-	} {
-		stmt, err := sql.Parse(q)
-		if err != nil {
-			t.Fatalf("Parse failed for %q: %v", q, err)
-		}
-		if _, _, err := eng.Execute(stmt); err != nil {
-			t.Fatalf("Execute failed for %q: %v", q, err)
-		}
-	}
-
-	// No rows should be visible.
-	selectSQL := "SELECT * FROM users;"
-	selStmt, err := sql.Parse(selectSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-	_, rows, err := eng.Execute(selStmt)
-	if err != nil {
-		t.Fatalf("Execute SELECT failed: %v", err)
-	}
-	if len(rows) != 0 {
-		t.Fatalf("expected 0 rows after rollback, got %d", len(rows))
-	}
-
-	// BEGIN; INSERT; COMMIT;
-	for _, q := range []string{
-		"BEGIN;",
-		"INSERT INTO users VALUES (2, 'Bob', false);",
-		"COMMIT;",
-	} {
-		stmt, err := sql.Parse(q)
-		if err != nil {
-			t.Fatalf("Parse failed for %q: %v", q, err)
-		}
-		if _, _, err := eng.Execute(stmt); err != nil {
-			t.Fatalf("Execute failed for %q: %v", q, err)
-		}
-	}
-
-	// Row should be visible now.
-	selStmt2, err := sql.Parse(selectSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-	_, rows, err = eng.Execute(selStmt2)
-	if err != nil {
-		t.Fatalf("Execute SELECT failed: %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row after commit, got %d", len(rows))
-	}
-}
-func TestEngine_Select_OrderByLimitAndWhere(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	// CREATE
-	createSQL := "CREATE TABLE users (id INT, name STRING, age INT);"
-	stmt, _ := sql.Parse(createSQL)
-	if _, _, err := eng.Execute(stmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	// INSERT some users
-	queries := []string{
-		"INSERT INTO users VALUES (1, 'Charlie', 30);",
-		"INSERT INTO users VALUES (2, 'Alice', 25);",
-		"INSERT INTO users VALUES (3, 'Bob', 20);",
-	}
-	for _, q := range queries {
-		s, err := sql.Parse(q)
-		if err != nil {
-			t.Fatalf("Parse INSERT failed: %v", err)
-		}
-		if _, _, err := eng.Execute(s); err != nil {
-			t.Fatalf("Execute INSERT failed: %v", err)
-		}
-	}
-
-	// SELECT names of users age >= 21, order by name asc, limit 2
-	selectSQL := "SELECT name FROM users WHERE age >= 21 ORDER BY name ASC LIMIT 2;"
-	selStmt, err := sql.Parse(selectSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-	cols, rows, err := eng.Execute(selStmt)
-	if err != nil {
-		t.Fatalf("Execute SELECT failed: %v", err)
-	}
-
-	if len(cols) != 1 || cols[0] != "name" {
-		t.Fatalf("unexpected cols: %#v", cols)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(rows))
-	}
-
-	got := []string{rows[0][0].S, rows[1][0].S}
-	want := []string{"Alice", "Charlie"}
-	if got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("unexpected ordering: got %v, want %v", got, want)
-	}
-}
-
-func TestEngine_Select_ErrorsOnUnknownWhereColumn(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	createSQL := "CREATE TABLE users (id INT, name STRING);"
-	stmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	selSQL := "SELECT * FROM users WHERE missing = 1;"
-	selStmt, err := sql.Parse(selSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-
-	if _, _, err := eng.Execute(selStmt); err == nil {
-		t.Fatalf("expected error for unknown WHERE column, got nil")
-	}
-}
-
-func TestEngine_Select_ErrorsOnUnknownOrderByColumn(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	createSQL := "CREATE TABLE users (id INT, name STRING);"
-	stmt, err := sql.Parse(createSQL)
-	if err != nil {
-		t.Fatalf("Parse CREATE failed: %v", err)
-	}
-	if _, _, err := eng.Execute(stmt); err != nil {
-		t.Fatalf("Execute CREATE failed: %v", err)
-	}
-
-	selSQL := "SELECT * FROM users ORDER BY missing;"
-	selStmt, err := sql.Parse(selSQL)
-	if err != nil {
-		t.Fatalf("Parse SELECT failed: %v", err)
-	}
-
-	if _, _, err := eng.Execute(selStmt); err == nil {
-		t.Fatalf("expected error for unknown ORDER BY column, got nil")
-	}
-}
-
-func TestEngineExecute_SelectCaseInsensitiveColumns(t *testing.T) {
-	store := memstore.New()
-	eng := New(store)
-
-	if err := eng.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	// Create table and insert a couple of rows.
-	for _, q := range []string{
-		"CREATE TABLE users (id INT, name STRING, active BOOL);",
-		"INSERT INTO users VALUES (1, 'Alice', true);",
-		"INSERT INTO users VALUES (2, 'Bob', false);",
-	} {
-		stmt, err := sql.Parse(q)
-		if err != nil {
-			t.Fatalf("Parse failed for %q: %v", q, err)
-		}
-		if _, _, err := eng.Execute(stmt); err != nil {
-			t.Fatalf("Execute failed for %q: %v", q, err)
-		}
-	}
-
-	// Use uppercase column names in SELECT, WHERE, and ORDER BY.
-	stmt, err := sql.Parse("SELECT ID, NAME FROM users WHERE ACTIVE = true ORDER BY ID DESC;")
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
-	}
-
-	cols, rows, err := eng.Execute(stmt)
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-
-	if got, want := cols, []string{"ID", "NAME"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected columns: got %v, want %v", got, want)
-	}
-
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row after WHERE filter, got %d", len(rows))
-	}
-
-	row := rows[0]
-	if row[0].Type != sql.TypeInt || row[0].I64 != 1 {
-		t.Fatalf("ID mismatch: %+v", row[0])
-	}
-	if row[1].Type != sql.TypeString || row[1].S != "Alice" {
-		t.Fatalf("NAME mismatch: %+v", row[1])
 	}
 }

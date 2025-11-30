@@ -2,14 +2,11 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
-	"goDB/internal/storage/filestore"
-	"io"
-	"log"
 
 	"goDB/internal/engine"
 	"goDB/internal/sql"
+	"goDB/internal/storage/memstore"
 	"os"
 	"strings"
 )
@@ -17,162 +14,77 @@ import (
 func main() {
 	fmt.Println("GoDB server starting (REPL mode)…")
 
-	// choose storage implementation
-	// mem := memstore.New()
-	// eng := engine.New(mem)
+	// Create the in-memory storage engine.
+	store := memstore.New()
 
-	fs, err := filestore.New("./data")
-	if err != nil {
-		log.Fatalf("failed to init filestore: %v", err)
-	}
-	eng := engine.New(fs)
+	// Create the DB engine on top of this storage.
+	eng := engine.New(store)
 
+	// Start the engine.
 	if err := eng.Start(); err != nil {
-		log.Fatalf("engine start failed: %v", err)
+		fmt.Println("ERROR:", err)
+		return
 	}
 
-	fmt.Println("Engine started successfully (using on-disk filestore at ./data).")
+	fmt.Println("Engine started successfully (using in-memory storage).")
 	fmt.Println("Type SQL statements like:")
 	fmt.Println("  CREATE TABLE users (id INT, name STRING, active BOOL);")
 	fmt.Println("  INSERT INTO users VALUES (1, 'Alice', true);")
 	fmt.Println("  SELECT * FROM users;")
 	fmt.Println("Meta commands:")
-	fmt.Println("  .tables        - list tables")
-	fmt.Println("  .schema <tbl>  - show column definitions")
-	fmt.Println("  .exit          - quit")
-	fmt.Println("  .help          - show this help")
+	fmt.Println("  .exit   - quit")
+	fmt.Println("  .help   - show this help")
 	fmt.Println()
 
 	runREPL(eng)
 }
 
 func runREPL(eng *engine.DBEngine) {
-	reader := bufio.NewReader(os.Stdin)
-	var buffer strings.Builder
+	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
-		prompt := "godb> "
-		if buffer.Len() > 0 {
-			prompt = "...> "
-		}
+		fmt.Print("godb> ")
 
-		fmt.Print(prompt)
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				fmt.Println("\nExiting.")
-				return
-			}
-
-			fmt.Println("Read error:", err)
+		if !scanner.Scan() {
+			// EOF (Ctrl+D) or input error
+			fmt.Println("\nExiting.")
 			return
 		}
 
-		line = strings.TrimSpace(line)
-
-		if buffer.Len() == 0 && line == "" {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
 			continue
 		}
 
-		// Meta commands start with a dot, like SQLite. Only process them
-		// when no SQL is buffered to avoid mixing with multi-line input.
-		if buffer.Len() == 0 && strings.HasPrefix(line, ".") {
-			if handleMetaCommand(line, eng) {
+		// Meta commands start with a dot, like SQLite.
+		if strings.HasPrefix(line, ".") {
+			if handleMetaCommand(line) {
 				return
 			}
 			continue
 		}
 
-		if line != "" {
-			if buffer.Len() > 0 {
-				buffer.WriteString(" ")
-			}
-			buffer.WriteString(line)
-		}
-
-		if strings.HasSuffix(line, ";") {
-			statement := buffer.String()
-			buffer.Reset()
-			handleSQL(statement, eng)
-		}
+		handleSQL(line, eng)
 	}
 }
 
 // handleMetaCommand processes commands like .exit, .help.
 // Returns true if the REPL should exit.
-func handleMetaCommand(line string, eng *engine.DBEngine) bool {
-	trimmed := strings.TrimSpace(line)
-	parts := strings.Fields(trimmed)
-	if len(parts) == 0 {
-		return false
-	}
-
-	switch strings.ToLower(parts[0]) {
+func handleMetaCommand(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
 	case ".exit", ".quit":
 		fmt.Println("Bye.")
 		return true
 	case ".help":
-		fmt.Println("Supported SQL (current version):")
-		fmt.Println()
-		fmt.Println("  CREATE TABLE tableName (")
-		fmt.Println("      columnName TYPE, ...")
-		fmt.Println("  );")
-		fmt.Println("    - Supported types: INT, FLOAT, STRING, BOOL")
-		fmt.Println()
-		fmt.Println("  INSERT INTO tableName VALUES (value1, value2, ...);")
-		fmt.Println("    - Values must match table column order")
-		fmt.Println()
-		fmt.Println("  SELECT * FROM tableName;")
-		fmt.Println("  SELECT col1, col2, ... FROM tableName;")
-		fmt.Println("  SELECT col1, col2 FROM tableName WHERE column = literal;")
-		fmt.Println("    - WHERE: supports only equality (=)")
-		fmt.Println("    - WHERE literals: INT, FLOAT, STRING ('text'), BOOL")
-		fmt.Println()
+		fmt.Println("Supported SQL (v0):")
+		fmt.Println("  CREATE TABLE name (col TYPE, ...);")
+		fmt.Println("  INSERT INTO name VALUES (...);")
+		fmt.Println("  SELECT * FROM name;")
 		fmt.Println("Meta commands:")
-		fmt.Println("  .tables        List available tables")
-		fmt.Println("  .schema <tbl>  Show column definitions")
-		fmt.Println("  .help          Show this help")
-		fmt.Println("  .exit          Exit the REPL")
-		fmt.Println()
-		return false
-	case ".tables":
-		names, err := eng.ListTables()
-		if err != nil {
-			fmt.Println("Error listing tables:", err)
-			return false
-		}
-
-		if len(names) == 0 {
-			fmt.Println("(no tables)")
-			return false
-		}
-
-		fmt.Println(strings.Join(names, "\n"))
-		return false
-	case ".schema":
-		if len(parts) < 2 {
-			fmt.Println("Usage: .schema <table>")
-			return false
-		}
-
-		cols, err := eng.TableSchema(parts[1])
-		if err != nil {
-			fmt.Println("Error loading schema:", err)
-			return false
-		}
-
-		if len(cols) == 0 {
-			fmt.Println("(no columns)")
-			return false
-		}
-
-		for _, col := range cols {
-			fmt.Printf("%s %s\n", col.Name, formatType(col.Type))
-		}
-		return false
-
+		fmt.Println("  .exit, .quit  - quit the shell")
+		fmt.Println("  .help         - show this help")
 	default:
-		fmt.Printf("Unknown meta command: %s\n", trimmed)
+		fmt.Printf("Unknown meta command: %s\n", line)
 	}
 	return false
 }
@@ -229,24 +141,7 @@ func formatValue(v sql.Value) string {
 			return "true"
 		}
 		return "false"
-	case sql.TypeNull:
-		return "NULL"
 	default:
 		return "NULL"
-	}
-}
-
-func formatType(t sql.DataType) string {
-	switch t {
-	case sql.TypeInt:
-		return "INT"
-	case sql.TypeFloat:
-		return "FLOAT"
-	case sql.TypeString:
-		return "STRING"
-	case sql.TypeBool:
-		return "BOOL"
-	default:
-		return "UNKNOWN"
 	}
 }

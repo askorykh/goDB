@@ -36,7 +36,3 @@ go.work.sum
 /.idea/modules.xml
 /.idea/sqldialects.xml
 /.idea/vcs.xml
-
-# Generated demo assets
-docs/repl-demo.gif
-/data/
