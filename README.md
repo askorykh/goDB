@@ -6,9 +6,7 @@ GoDB is a tiny educational database engine written in Go. It exists as a playgro
 
 ## Features
 
-- Pluggable storage engines:
-  - In-memory store for quick experimentation
-  - Experimental on-disk filestore with a simple WAL (write-ahead log)
+- In-memory storage engine for quick experimentation
 - Simple SQL support:
   - `CREATE TABLE`
   - `INSERT INTO ... VALUES (...)`
@@ -34,7 +32,7 @@ GoDB is a tiny educational database engine written in Go. It exists as a playgro
 git clone https://github.com/askorykh/godb.git
 cd godb
 
-# Run the REPL server (creates ./data when using the filestore)
+# Run the REPL server (in-memory storage)
 go run ./cmd/godb-server
 ```
 
@@ -50,15 +48,13 @@ COMMIT;
 ```
 
 
-### Storage backends
+### Storage backend
 
-By default the REPL wires the engine to the on-disk filestore located in `./data`. It uses a straightforward file format and an append-only WAL for durability. On startup, the filestore replays committed WAL entries to rebuild table files. Rollbacks still only cancel the in-memory engine transaction—the on-disk table files are not reverted yet. See [`internal/storage/filestore/README.md`](internal/storage/filestore/README.md) for details.
-
-If you want a pure in-memory experience (no files written), switch to the `memstore` engine inside `cmd/godb-server/main.go` by swapping the initialization block.
+The REPL uses the in-memory storage engine to match the article walkthroughs and keep the footprint tiny.
 
 ### Transactions
 
-The engine understands `BEGIN`, `COMMIT`, and `ROLLBACK` to group multiple statements. Transactions are executed against the configured storage backend. With the default filestore backend, commits fsync the WAL before returning; rollbacks do not undo writes on disk yet, but committed WAL entries are replayed on startup.
+The engine understands `BEGIN`, `COMMIT`, and `ROLLBACK` to group multiple statements. Transactions are executed against the configured storage backend. In the in-memory backend used for the articles, commit simply swaps the staged tables into place and rollback is a no-op.
 
 ## Running tests
 
@@ -75,10 +71,7 @@ internal/
   engine/           # DB engine, execution planner, and simple evaluator
   sql/              # SQL parser and AST definitions
   storage/
-    filestore/      # On-disk storage with WAL and recovery
     memstore/       # In-memory storage implementation
-  index/
-    btree/          # WIP B-tree index structures used by the filestore
 ```
 
 ## Architecture
@@ -88,20 +81,15 @@ graph TD;
   REPL --> Parser[SQL parser];
   Parser --> Engine[Execution engine];
   Engine --> Storage[Storage interface];
-  Storage --> Filestore[On-disk store + WAL];
   Storage --> Memstore[In-memory store];
 ```
 
 - `cmd/godb-server` reads input, handles meta commands, and forwards SQL to the engine.
 - `internal/sql` parses SQL into AST nodes and validates column types.
 - `internal/engine` executes statements (create, insert, select, update, delete) against the storage implementation.
-- `internal/storage/filestore` provides the default on-disk storage layer with WAL and recovery.
 - `internal/storage/memstore` provides an in-memory table storage layer used for testing/experiments.
-
 ## Roadmap (very rough)
 
-- Improve on-disk storage (rollback/undo, durability tests, compaction)
 - Better query planner / optimizer
-- Indexes integrated into query execution
 - Richer SQL surface and multi-statement transaction semantics
 - Maybe: distributed experiments later

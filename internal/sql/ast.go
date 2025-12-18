@@ -97,10 +97,3 @@ type OrderByClause struct {
 	Column string
 	Desc   bool // false = ASC (default), true = DESC
 }
-type CreateIndexStmt struct {
-	IndexName  string
-	TableName  string
-	ColumnName string
-}
-
-func (*CreateIndexStmt) stmtNode() {}

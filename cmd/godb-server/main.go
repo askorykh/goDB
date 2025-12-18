@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"goDB/internal/storage/filestore"
+	"goDB/internal/storage/memstore"
 	"io"
 	"log"
 
@@ -17,21 +17,15 @@ import (
 func main() {
 	fmt.Println("GoDB server starting (REPL mode)…")
 
-	// choose storage implementation
-	// mem := memstore.New()
-	// eng := engine.New(mem)
-
-	fs, err := filestore.New("./data")
-	if err != nil {
-		log.Fatalf("failed to init filestore: %v", err)
-	}
-	eng := engine.New(fs)
+	// choose storage implementation (in-memory for the article code)
+	mem := memstore.New()
+	eng := engine.New(mem)
 
 	if err := eng.Start(); err != nil {
 		log.Fatalf("engine start failed: %v", err)
 	}
 
-	fmt.Println("Engine started successfully (using on-disk filestore at ./data).")
+	fmt.Println("Engine started successfully (using in-memory storage).")
 	fmt.Println("Type SQL statements like:")
 	fmt.Println("  CREATE TABLE users (id INT, name STRING, active BOOL);")
 	fmt.Println("  INSERT INTO users VALUES (1, 'Alice', true);")
@@ -124,9 +118,11 @@ func handleMetaCommand(line string, eng *engine.DBEngine) bool {
 		fmt.Println()
 		fmt.Println("  SELECT * FROM tableName;")
 		fmt.Println("  SELECT col1, col2, ... FROM tableName;")
-		fmt.Println("  SELECT col1, col2 FROM tableName WHERE column = literal;")
-		fmt.Println("    - WHERE: supports only equality (=)")
+		fmt.Println("  SELECT col1, col2 FROM tableName WHERE column <op> literal;")
+		fmt.Println("    - WHERE comparisons: =, !=, <, <=, >, >=")
 		fmt.Println("    - WHERE literals: INT, FLOAT, STRING ('text'), BOOL")
+		fmt.Println("    - ORDER BY column [ASC|DESC]")
+		fmt.Println("    - LIMIT n")
 		fmt.Println()
 		fmt.Println("Meta commands:")
 		fmt.Println("  .tables        List available tables")

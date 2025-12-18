@@ -31,8 +31,6 @@ func Parse(query string) (Statement, error) {
 			switch tokens[1] {
 			case "TABLE":
 				return parseCreateTable(q)
-			case "INDEX":
-				return parseCreateIndex(q)
 			}
 		}
 		return nil, fmt.Errorf("invalid CREATE statement")
@@ -54,7 +52,7 @@ func Parse(query string) (Statement, error) {
 	case "ROLLBACK":
 		return parseRollback(q)
 	default:
-		return nil, fmt.Errorf("unsupported statement (supported: CREATE TABLE, CREATE INDEX, INSERT, SELECT, UPDATE, DELETE, BEGIN, COMMIT, ROLLBACK)")
+		return nil, fmt.Errorf("unsupported statement (supported: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, BEGIN, COMMIT, ROLLBACK)")
 	}
 
 }
